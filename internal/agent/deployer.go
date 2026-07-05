@@ -2,14 +2,11 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"time"
-
-	"github.com/phpsandbox/rook/internal/runtime"
 )
 
 type Deployer struct {
@@ -33,16 +30,6 @@ func NewDeployer(docker DockerClient, state *StateStore) *Deployer {
 }
 
 func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(OutboundMessage)) error {
-	var source SourceRef
-	if err := json.Unmarshal(payload.Source, &source); err != nil {
-		return fmt.Errorf("parse source: %w", err)
-	}
-
-	var plan Plan
-	if err := json.Unmarshal(payload.Plan, &plan); err != nil {
-		return fmt.Errorf("parse plan: %w", err)
-	}
-
 	commandID := payload.DeploymentID
 	emitLog := func(stream, content string) {
 		send(OutboundMessage{
@@ -70,13 +57,13 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	defer os.RemoveAll(workDir)
 
 	emitLog("build", "Cloning source...")
-	if err := d.cloneSource(ctx, source, workDir); err != nil {
+	if err := d.cloneSource(ctx, payload.Source, workDir); err != nil {
 		return fmt.Errorf("clone source: %w", err)
 	}
 
-	if len(plan.Build.Commands) > 0 {
+	if len(payload.Plan.Build.Commands) > 0 {
 		emitLog("build", "Running build commands...")
-		for _, cmd := range plan.Build.Commands {
+		for _, cmd := range payload.Plan.Build.Commands {
 			emitLog("build", "$ "+cmd)
 			if err := d.runBuildCommand(ctx, workDir, cmd, func(line string) {
 				emitLog("build", line)
@@ -86,16 +73,14 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		}
 	}
 
-	imageTag := fmt.Sprintf("okra-%s:%s", payload.DeploymentID, time.Now().Format("20060102-150405"))
-	if plan.Strategy == StrategyLaravel {
-		if _, err := runtime.WriteLaravelImageFiles(workDir, runtime.Plan{
-			Command: plan.Runtime.Command,
-			Port:    plan.Runtime.Port,
-		}); err != nil {
-			return fmt.Errorf("write runtime image files: %w", err)
+	if payload.Bundle != nil {
+		emitLog("build", "Applying deployment bundle...")
+		if err := ApplyDeployBundle(workDir, *payload.Bundle); err != nil {
+			return fmt.Errorf("apply deployment bundle: %w", err)
 		}
 	}
 
+	imageTag := fmt.Sprintf("okra-%s:%s", payload.DeploymentID, time.Now().Format("20060102-150405"))
 	emitLog("build", "Building Docker image...")
 	if err := d.docker.Build(ctx, workDir, imageTag, func(line string) {
 		emitLog("build", line)
@@ -118,9 +103,9 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	containerID, err := d.docker.Run(ctx, RunOptions{
 		Name:          containerName,
 		Image:         imageTag,
-		Command:       plan.Runtime.Command,
+		Command:       payload.Plan.Runtime.Command,
 		HostPort:      port,
-		ContainerPort: plan.Runtime.Port,
+		ContainerPort: payload.Plan.Runtime.Port,
 		Env:           payload.Env,
 	})
 	if err != nil {

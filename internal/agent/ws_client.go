@@ -74,14 +74,34 @@ func (c *WSClient) Read(ctx context.Context) (InboundMessage, error) {
 		return InboundMessage{}, fmt.Errorf("not connected")
 	}
 
-	_, data, err := conn.Read(ctx)
+	messageType, data, err := conn.Read(ctx)
 	if err != nil {
 		return InboundMessage{}, err
 	}
 
 	var msg InboundMessage
-	if err := json.Unmarshal(data, &msg); err != nil {
-		return InboundMessage{}, fmt.Errorf("unmarshal inbound message: %w", err)
+	switch messageType {
+	case websocket.MessageText:
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return InboundMessage{}, fmt.Errorf("unmarshal inbound message: %w", err)
+		}
+	case websocket.MessageBinary:
+		var wire struct {
+			Type      string `msgpack:"type"`
+			CommandID string `msgpack:"commandId"`
+			Payload   any    `msgpack:"payload"`
+		}
+		if err := msgpackUnmarshal(data, &wire); err != nil {
+			return InboundMessage{}, fmt.Errorf("unmarshal inbound messagepack: %w", err)
+		}
+		msg.Type = wire.Type
+		msg.CommandID = wire.CommandID
+		msg.decoded = wire.Payload
+	default:
+		return InboundMessage{}, fmt.Errorf("unsupported websocket message type %v", messageType)
+	}
+	if msg.Type == "" {
+		return InboundMessage{}, fmt.Errorf("inbound message type is required")
 	}
 	return msg, nil
 }

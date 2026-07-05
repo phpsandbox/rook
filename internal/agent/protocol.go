@@ -1,11 +1,38 @@
 package agent
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/vmihailenco/msgpack/v5"
+)
 
 type InboundMessage struct {
 	Type      string          `json:"type"`
 	CommandID string          `json:"commandId,omitempty"`
 	Payload   json.RawMessage `json:"payload,omitempty"`
+	decoded   any
+}
+
+func (m InboundMessage) DecodePayload(v any) error {
+	if len(m.Payload) > 0 {
+		return json.Unmarshal(m.Payload, v)
+	}
+	if m.decoded == nil {
+		return nil
+	}
+	data, err := msgpackMarshal(m.decoded)
+	if err != nil {
+		return err
+	}
+	return msgpackUnmarshal(data, v)
+}
+
+func msgpackMarshal(v any) ([]byte, error) {
+	return msgpack.Marshal(v)
+}
+
+func msgpackUnmarshal(data []byte, v any) error {
+	return msgpack.Unmarshal(data, v)
 }
 
 type OutboundMessage struct {
@@ -50,31 +77,39 @@ type ResourceInfo struct {
 }
 
 type DeployPayload struct {
-	DeploymentID string            `json:"deploymentId"`
-	Source       json.RawMessage   `json:"source"`
-	Plan         json.RawMessage   `json:"plan"`
-	Env          map[string]string `json:"env"`
-	Options      json.RawMessage   `json:"options"`
+	DeploymentID string            `json:"deploymentId" msgpack:"deploymentId"`
+	Source       SourceRef         `json:"source" msgpack:"source"`
+	Plan         Plan              `json:"plan" msgpack:"plan"`
+	Bundle       *DeployBundle     `json:"bundle,omitempty" msgpack:"bundle,omitempty"`
+	Env          map[string]string `json:"env" msgpack:"env"`
+	Options      map[string]any    `json:"options,omitempty" msgpack:"options,omitempty"`
+}
+
+type DeployBundle struct {
+	Format string `json:"format" msgpack:"format"`
+	Size   int64  `json:"size" msgpack:"size"`
+	SHA256 string `json:"sha256" msgpack:"sha256"`
+	Data   []byte `json:"data" msgpack:"data"`
 }
 
 type StopPayload struct {
-	DeploymentID string `json:"deploymentId"`
+	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
 }
 
 type DeletePayload struct {
-	DeploymentID string `json:"deploymentId"`
+	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
 }
 
 type LogsTailPayload struct {
-	DeploymentID string `json:"deploymentId"`
-	Lines        int    `json:"lines"`
+	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
+	Lines        int    `json:"lines" msgpack:"lines"`
 }
 
 type HTTPRequestPayload struct {
-	RequestID    string            `json:"requestId"`
-	DeploymentID string            `json:"deploymentId"`
-	Method       string            `json:"method"`
-	Path         string            `json:"path"`
-	Headers      map[string]string `json:"headers"`
-	Body         string            `json:"body,omitempty"`
+	RequestID    string            `json:"requestId" msgpack:"requestId"`
+	DeploymentID string            `json:"deploymentId" msgpack:"deploymentId"`
+	Method       string            `json:"method" msgpack:"method"`
+	Path         string            `json:"path" msgpack:"path"`
+	Headers      map[string]string `json:"headers" msgpack:"headers"`
+	Body         string            `json:"body,omitempty" msgpack:"body,omitempty"`
 }

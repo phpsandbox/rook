@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"net/url"
@@ -116,7 +115,7 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 	switch msg.Type {
 	case "deploy":
 		var payload agent.DeployPayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		if err := msg.DecodePayload(&payload); err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
@@ -128,7 +127,7 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 
 	case "stop":
 		var payload agent.StopPayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		if err := msg.DecodePayload(&payload); err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
@@ -140,7 +139,7 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 
 	case "delete":
 		var payload agent.DeletePayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		if err := msg.DecodePayload(&payload); err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
@@ -152,7 +151,7 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 
 	case "logs.tail":
 		var payload agent.LogsTailPayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		if err := msg.DecodePayload(&payload); err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
@@ -165,7 +164,7 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 
 	case "http":
 		var payload agent.HTTPRequestPayload
-		if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		if err := msg.DecodePayload(&payload); err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}

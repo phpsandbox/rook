@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -138,27 +137,17 @@ func deployPayload(t *testing.T, deploymentID string) DeployPayload {
 		t.Fatal(err)
 	}
 
-	source, err := json.Marshal(SourceRef{
-		Provider: SourceProviderPath,
-		Path:     sourceDir,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	plan, err := json.Marshal(Plan{
-		Runtime: RuntimePlan{
-			Port: 8080,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	return DeployPayload{
 		DeploymentID: deploymentID,
-		Source:       source,
-		Plan:         plan,
-		Env:          map[string]string{},
+		Source: SourceRef{
+			Provider: SourceProviderPath,
+			Path:     sourceDir,
+		},
+		Plan: Plan{
+			Runtime: RuntimePlan{
+				Port: 8080,
+			},
+		},
+		Env: map[string]string{},
 	}
 }
