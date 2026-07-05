@@ -1,0 +1,217 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/phpsandbox/rook/internal/runtime"
+)
+
+type Deployer struct {
+	docker DockerClient
+	state  *StateStore
+}
+
+type DockerClient interface {
+	Build(ctx context.Context, contextDir string, tag string, onOutput func(string)) error
+	RunBuildCommand(ctx context.Context, workspace string, command string, env map[string]string, onOutput func(string)) error
+	Run(ctx context.Context, opts RunOptions) (string, error)
+	Stop(ctx context.Context, containerID string) error
+	Remove(ctx context.Context, containerID string) error
+	Inspect(ctx context.Context, containerID string) (bool, error)
+	Logs(ctx context.Context, containerID string, tail int) (string, error)
+	WaitHealthy(ctx context.Context, containerID string, timeout time.Duration) error
+}
+
+func NewDeployer(docker DockerClient, state *StateStore) *Deployer {
+	return &Deployer{docker: docker, state: state}
+}
+
+func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(OutboundMessage)) error {
+	var source SourceRef
+	if err := json.Unmarshal(payload.Source, &source); err != nil {
+		return fmt.Errorf("parse source: %w", err)
+	}
+
+	var plan Plan
+	if err := json.Unmarshal(payload.Plan, &plan); err != nil {
+		return fmt.Errorf("parse plan: %w", err)
+	}
+
+	commandID := payload.DeploymentID
+	emitLog := func(stream, content string) {
+		send(OutboundMessage{
+			Type:      "log",
+			CommandID: commandID,
+			Stream:    stream,
+			Content:   content,
+		})
+	}
+	emitPhase := func(name string, data map[string]any) {
+		send(OutboundMessage{
+			Type:      "phase",
+			CommandID: commandID,
+			Phase:     name,
+			Data:      data,
+		})
+	}
+
+	emitPhase("build.started", nil)
+
+	workDir := filepath.Join(os.TempDir(), "rook", payload.DeploymentID)
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return fmt.Errorf("create work dir: %w", err)
+	}
+	defer os.RemoveAll(workDir)
+
+	emitLog("build", "Cloning source...")
+	if err := d.cloneSource(ctx, source, workDir); err != nil {
+		return fmt.Errorf("clone source: %w", err)
+	}
+
+	if len(plan.Build.Commands) > 0 {
+		emitLog("build", "Running build commands...")
+		for _, cmd := range plan.Build.Commands {
+			emitLog("build", "$ "+cmd)
+			if err := d.runBuildCommand(ctx, workDir, cmd, func(line string) {
+				emitLog("build", line)
+			}, payload.Env); err != nil {
+				return fmt.Errorf("build command %q: %w", cmd, err)
+			}
+		}
+	}
+
+	imageTag := fmt.Sprintf("okra-%s:%s", payload.DeploymentID, time.Now().Format("20060102-150405"))
+	if plan.Strategy == StrategyLaravel {
+		if _, err := runtime.WriteLaravelImageFiles(workDir, runtime.Plan{
+			Command: plan.Runtime.Command,
+			Port:    plan.Runtime.Port,
+		}); err != nil {
+			return fmt.Errorf("write runtime image files: %w", err)
+		}
+	}
+
+	emitLog("build", "Building Docker image...")
+	if err := d.docker.Build(ctx, workDir, imageTag, func(line string) {
+		emitLog("build", line)
+	}); err != nil {
+		return fmt.Errorf("docker build: %w", err)
+	}
+
+	emitPhase("build.completed", nil)
+	emitPhase("deploy.started", nil)
+
+	port, err := d.allocatePort()
+	if err != nil {
+		return fmt.Errorf("allocate port: %w", err)
+	}
+
+	containerName := fmt.Sprintf("rook-%s-%s", payload.DeploymentID, time.Now().UTC().Format("20060102-150405"))
+	existing, hasExisting := d.state.Get(payload.DeploymentID)
+
+	emitLog("deploy", "Starting container...")
+	containerID, err := d.docker.Run(ctx, RunOptions{
+		Name:          containerName,
+		Image:         imageTag,
+		Command:       plan.Runtime.Command,
+		HostPort:      port,
+		ContainerPort: plan.Runtime.Port,
+		Env:           payload.Env,
+	})
+	if err != nil {
+		return fmt.Errorf("start container: %w", err)
+	}
+
+	emitLog("deploy", "Waiting for container to become healthy...")
+	if err := d.docker.WaitHealthy(ctx, containerID, 60*time.Second); err != nil {
+		_ = d.docker.Remove(ctx, containerID)
+		return fmt.Errorf("container health check: %w", err)
+	}
+
+	routeKey := fmt.Sprintf("deploy--%s", payload.DeploymentID)
+	if err := d.state.Set(payload.DeploymentID, DeploymentState{
+		ContainerID: containerID,
+		Port:        port,
+		ImageRef:    imageTag,
+		RouteKey:    routeKey,
+		StartedAt:   time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		_ = d.docker.Remove(ctx, containerID)
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	if hasExisting {
+		emitLog("deploy", "Retiring previous container...")
+		_ = d.docker.Stop(ctx, existing.ContainerID)
+		_ = d.docker.Remove(ctx, existing.ContainerID)
+	}
+
+	emitPhase("deploy.completed", map[string]any{"port": port, "containerId": containerID})
+	return nil
+}
+
+func (d *Deployer) Stop(ctx context.Context, deploymentID string) error {
+	state, ok := d.state.Get(deploymentID)
+	if !ok {
+		return fmt.Errorf("deployment %s not found", deploymentID)
+	}
+	if err := d.docker.Stop(ctx, state.ContainerID); err != nil {
+		return err
+	}
+	return d.state.Remove(deploymentID)
+}
+
+func (d *Deployer) Delete(ctx context.Context, deploymentID string) error {
+	state, ok := d.state.Get(deploymentID)
+	if !ok {
+		return fmt.Errorf("deployment %s not found", deploymentID)
+	}
+	_ = d.docker.Stop(ctx, state.ContainerID)
+	if err := d.docker.Remove(ctx, state.ContainerID); err != nil {
+		return err
+	}
+	return d.state.Remove(deploymentID)
+}
+
+func (d *Deployer) TailLogs(ctx context.Context, deploymentID string, lines int) (string, error) {
+	state, ok := d.state.Get(deploymentID)
+	if !ok {
+		return "", fmt.Errorf("deployment %s not found", deploymentID)
+	}
+	return d.docker.Logs(ctx, state.ContainerID, lines)
+}
+
+func (d *Deployer) cloneSource(ctx context.Context, source SourceRef, dest string) error {
+	return PrepareSource(ctx, source, dest)
+}
+
+func (d *Deployer) runBuildCommand(ctx context.Context, dir string, command string, onOutput func(string), env map[string]string) error {
+	return d.docker.RunBuildCommand(ctx, dir, command, env, onOutput)
+}
+
+func (d *Deployer) allocatePort() (int, error) {
+	used := map[int]bool{}
+	for _, state := range d.state.All() {
+		used[state.Port] = true
+	}
+	for port := PortRangeStart; port <= PortRangeEnd; port++ {
+		if !used[port] && hostPortAvailable(port) {
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no available ports in range %d-%d", PortRangeStart, PortRangeEnd)
+}
+
+func hostPortAvailable(port int) bool {
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
+}
