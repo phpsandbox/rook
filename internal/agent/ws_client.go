@@ -81,15 +81,7 @@ func (c *WSClient) SendMessagePack(ctx context.Context, msg any) error {
 }
 
 func (c *WSClient) Read(ctx context.Context) (InboundMessage, error) {
-	c.mu.Lock()
-	conn := c.conn
-	c.mu.Unlock()
-
-	if conn == nil {
-		return InboundMessage{}, fmt.Errorf("not connected")
-	}
-
-	messageType, data, err := conn.Read(ctx)
+	messageType, data, err := c.ReadRaw(ctx)
 	if err != nil {
 		return InboundMessage{}, err
 	}
@@ -119,6 +111,29 @@ func (c *WSClient) Read(ctx context.Context) (InboundMessage, error) {
 		return InboundMessage{}, fmt.Errorf("inbound message type is required")
 	}
 	return msg, nil
+}
+
+func (c *WSClient) ReadMessagePack(ctx context.Context, v any) error {
+	messageType, data, err := c.ReadRaw(ctx)
+	if err != nil {
+		return err
+	}
+	if messageType != websocket.MessageBinary {
+		return fmt.Errorf("expected binary messagepack frame, got websocket message type %v", messageType)
+	}
+	return msgpackUnmarshal(data, v)
+}
+
+func (c *WSClient) ReadRaw(ctx context.Context) (websocket.MessageType, []byte, error) {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+
+	if conn == nil {
+		return 0, nil, fmt.Errorf("not connected")
+	}
+
+	return conn.Read(ctx)
 }
 
 func (c *WSClient) ConnectWithRetry(ctx context.Context) error {

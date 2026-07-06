@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -110,12 +112,38 @@ func (d *DockerManager) Logs(ctx context.Context, containerID string, tail int) 
 	return string(out), nil
 }
 
-func (d *DockerManager) WaitHealthy(ctx context.Context, containerID string, timeout time.Duration) error {
+func (d *DockerManager) WaitHealthy(ctx context.Context, containerID string, hostPort int, healthPath string, timeout time.Duration) error {
+	if hostPort <= 0 {
+		return fmt.Errorf("host port is required")
+	}
+
+	healthURL := fmt.Sprintf("http://127.0.0.1:%d%s", hostPort, normalizeHealthPath(healthPath))
+	client := &http.Client{Timeout: 2 * time.Second}
 	deadline := time.Now().Add(timeout)
+	var lastErr error
+
 	for time.Now().Before(deadline) {
-		running, _ := d.Inspect(ctx, containerID)
-		if running {
-			return nil
+		running, inspectErr := d.Inspect(ctx, containerID)
+		if inspectErr != nil {
+			lastErr = inspectErr
+		} else if !running {
+			lastErr = fmt.Errorf("container is not running")
+		} else {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+			if err != nil {
+				return fmt.Errorf("create health request: %w", err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				lastErr = err
+			} else {
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusBadRequest {
+					return nil
+				}
+				lastErr = fmt.Errorf("health endpoint returned %d", resp.StatusCode)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -123,7 +151,21 @@ func (d *DockerManager) WaitHealthy(ctx context.Context, containerID string, tim
 		case <-time.After(time.Second):
 		}
 	}
+	if lastErr != nil {
+		return fmt.Errorf("container %s did not become healthy within %v: %w", containerID, timeout, lastErr)
+	}
 	return fmt.Errorf("container %s did not become healthy within %v", containerID, timeout)
+}
+
+func normalizeHealthPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		return "/" + path
+	}
+	return path
 }
 
 type RunOptions struct {

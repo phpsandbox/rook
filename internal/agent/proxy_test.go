@@ -21,6 +21,9 @@ func TestProxyOpenHTTPPreservesHeaderPairsAndBinaryBody(t *testing.T) {
 		if got := r.Header.Values("X-Multi"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
 			t.Fatalf("X-Multi = %#v", got)
 		}
+		if strings.Contains(r.Header.Get("Accept-Encoding"), "br") || strings.Contains(r.Header.Get("Accept-Encoding"), "zstd") {
+			t.Fatalf("client accept-encoding leaked to origin: %q", r.Header.Get("Accept-Encoding"))
+		}
 		if !bytes.Equal(body, []byte{0, 1, 2, 255}) {
 			t.Fatalf("body = %#v", body)
 		}
@@ -54,6 +57,7 @@ func TestProxyOpenHTTPPreservesHeaderPairsAndBinaryBody(t *testing.T) {
 			{"host", "app.example.test"},
 			{"X-Multi", "one"},
 			{"X-Multi", "two"},
+			{"Accept-Encoding", "zstd, br"},
 		},
 		bytes.NewReader([]byte{0, 1, 2, 255}),
 	)

@@ -23,8 +23,9 @@ type BuildPlan struct {
 }
 
 type RuntimePlan struct {
-	Command []string `json:"command,omitempty" msgpack:"command,omitempty"`
-	Port    int      `json:"port" msgpack:"port"`
+	Command    []string `json:"command,omitempty" msgpack:"command,omitempty"`
+	Port       int      `json:"port" msgpack:"port"`
+	HealthPath string   `json:"healthPath" msgpack:"healthPath"`
 }
 
 type Plan struct {

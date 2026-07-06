@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-func TestHTTPTunnelManagerStreamsRequestAndResponseBytes(t *testing.T) {
+func TestRelayManagerStreamsHTTPRequestAndResponseBytes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if !bytes.Equal(body, []byte{0, 1, 2, 255}) {
@@ -42,57 +42,116 @@ func TestHTTPTunnelManagerStreamsRequestAndResponseBytes(t *testing.T) {
 	}
 
 	sender := newRecordingTunnelSender()
-	manager := NewHTTPTunnelManager(NewProxy(state), sender)
+	manager := NewRelayManager(NewProxy(state), sender)
 	ctx := context.Background()
 
-	manager.Handle(ctx, InboundMessage{
-		Type:      "http.start",
-		CommandID: "cmd-1",
-		decoded: HTTPStartPayload{
-			RequestID:    "req-1",
-			DeploymentID: "deployment-1",
-			Method:       http.MethodPost,
-			Path:         "/upload",
-			Headers:      []HeaderPair{{"host", "app.example.test"}},
-		},
+	manager.Handle(ctx, RelayFrame{
+		Protocol:     RelayProtocol,
+		Type:         RelayFrameOpen,
+		StreamID:     "req-1",
+		Kind:         RelayKindHTTP,
+		DeploymentID: "deployment-1",
+		Method:       http.MethodPost,
+		Path:         "/upload",
+		Headers:      []HeaderPair{{"host", "app.example.test"}},
+		HasBody:      boolPtr(true),
 	})
-	manager.Handle(ctx, InboundMessage{
-		Type:      "http.body",
-		CommandID: "cmd-1",
-		decoded:   HTTPBodyPayload{RequestID: "req-1", Data: []byte{0, 1}},
+	manager.Handle(ctx, RelayFrame{
+		Protocol: RelayProtocol,
+		Type:     RelayFrameData,
+		StreamID: "req-1",
+		Kind:     RelayKindHTTP,
+		Data:     []byte{0, 1},
 	})
-	manager.Handle(ctx, InboundMessage{
-		Type:      "http.body",
-		CommandID: "cmd-1",
-		decoded:   HTTPBodyPayload{RequestID: "req-1", Data: []byte{2, 255}},
+	manager.Handle(ctx, RelayFrame{
+		Protocol: RelayProtocol,
+		Type:     RelayFrameData,
+		StreamID: "req-1",
+		Kind:     RelayKindHTTP,
+		Data:     []byte{2, 255},
 	})
-	manager.Handle(ctx, InboundMessage{
-		Type:      "http.end",
-		CommandID: "cmd-1",
-		decoded:   HTTPEndPayload{RequestID: "req-1"},
+	manager.Handle(ctx, RelayFrame{
+		Protocol: RelayProtocol,
+		Type:     RelayFrameEnd,
+		StreamID: "req-1",
+		Kind:     RelayKindHTTP,
 	})
 
 	messages := sender.wait(t, 2*time.Second)
 	if len(messages) != 3 {
 		t.Fatalf("messages = %#v", messages)
 	}
-	if messages[0].Type != "http.response.start" || messages[0].Status != http.StatusCreated {
+	if messages[0].Type != RelayFrameHeaders || messages[0].Status != http.StatusCreated {
 		t.Fatalf("start message = %#v", messages[0])
 	}
 	if got := headerValues(messages[0].Headers, "Set-Cookie"); len(got) != 2 || got[0] != "a=1; Path=/" || got[1] != "b=2; Path=/" {
 		t.Fatalf("Set-Cookie = %#v", got)
 	}
-	if messages[1].Type != "http.response.body" || !bytes.Equal(messages[1].Data, []byte{5, 6, 7, 255}) {
+	if messages[1].Type != RelayFrameData || !bytes.Equal(messages[1].Data, []byte{5, 6, 7, 255}) {
 		t.Fatalf("body message = %#v", messages[1])
 	}
-	if messages[2].Type != "http.response.end" {
+	if messages[2].Type != RelayFrameEnd {
+		t.Fatalf("end message = %#v", messages[2])
+	}
+}
+
+func TestRelayManagerProxiesGETWithoutRequestBodyStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != http.NoBody {
+			body, _ := io.ReadAll(r.Body)
+			if len(body) != 0 {
+				t.Fatalf("body = %#v", body)
+			}
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	_, portString, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state := NewStateStore(t.TempDir())
+	if err := state.Set("deployment-1", DeploymentState{ContainerID: "container-1", Port: port}); err != nil {
+		t.Fatal(err)
+	}
+
+	sender := newRecordingTunnelSender()
+	manager := NewRelayManager(NewProxy(state), sender)
+	manager.Handle(context.Background(), RelayFrame{
+		Protocol:     RelayProtocol,
+		Type:         RelayFrameOpen,
+		StreamID:     "req-1",
+		Kind:         RelayKindHTTP,
+		DeploymentID: "deployment-1",
+		Method:       http.MethodGet,
+		Path:         "/",
+		HasBody:      boolPtr(false),
+	})
+
+	messages := sender.wait(t, 2*time.Second)
+	if len(messages) != 3 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	if messages[0].Type != RelayFrameHeaders || messages[0].Status != http.StatusOK {
+		t.Fatalf("start message = %#v", messages[0])
+	}
+	if messages[1].Type != RelayFrameData || !bytes.Equal(messages[1].Data, []byte("ok")) {
+		t.Fatalf("body message = %#v", messages[1])
+	}
+	if messages[2].Type != RelayFrameEnd {
 		t.Fatalf("end message = %#v", messages[2])
 	}
 }
 
 type recordingTunnelSender struct {
 	mu       sync.Mutex
-	messages []HTTPTunnelMessage
+	messages []RelayFrame
 	done     chan struct{}
 }
 
@@ -101,10 +160,10 @@ func newRecordingTunnelSender() *recordingTunnelSender {
 }
 
 func (s *recordingTunnelSender) SendMessagePack(ctx context.Context, msg any) error {
-	tunnelMessage := msg.(HTTPTunnelMessage)
+	tunnelMessage := msg.(RelayFrame)
 	s.mu.Lock()
 	s.messages = append(s.messages, tunnelMessage)
-	if tunnelMessage.Type == "http.response.end" || tunnelMessage.Type == "http.response.error" {
+	if tunnelMessage.Type == RelayFrameEnd || tunnelMessage.Type == RelayFrameReset {
 		select {
 		case <-s.done:
 		default:
@@ -115,7 +174,7 @@ func (s *recordingTunnelSender) SendMessagePack(ctx context.Context, msg any) er
 	return nil
 }
 
-func (s *recordingTunnelSender) wait(t *testing.T, timeout time.Duration) []HTTPTunnelMessage {
+func (s *recordingTunnelSender) wait(t *testing.T, timeout time.Duration) []RelayFrame {
 	t.Helper()
 	select {
 	case <-s.done:
@@ -124,15 +183,15 @@ func (s *recordingTunnelSender) wait(t *testing.T, timeout time.Duration) []HTTP
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]HTTPTunnelMessage(nil), s.messages...)
+	return append([]RelayFrame(nil), s.messages...)
 }
 
-func (s *recordingTunnelSender) waitForCount(t *testing.T, count int, timeout time.Duration) []HTTPTunnelMessage {
+func (s *recordingTunnelSender) waitForCount(t *testing.T, count int, timeout time.Duration) []RelayFrame {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		s.mu.Lock()
-		messages := append([]HTTPTunnelMessage(nil), s.messages...)
+		messages := append([]RelayFrame(nil), s.messages...)
 		s.mu.Unlock()
 		if len(messages) >= count {
 			return messages
@@ -151,4 +210,8 @@ func headerValues(headers []HeaderPair, name string) []string {
 		}
 	}
 	return values
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }

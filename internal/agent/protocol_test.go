@@ -15,7 +15,8 @@ func TestInboundMessageDecodePayloadFromMessagePackDecodedMap(t *testing.T) {
 				"image": "phpsandbox/php:latest",
 			},
 			"runtime": map[string]any{
-				"port": 8000,
+				"port":       8000,
+				"healthPath": "/",
 			},
 		},
 		"bundle": map[string]any{
@@ -42,6 +43,9 @@ func TestInboundMessageDecodePayloadFromMessagePackDecodedMap(t *testing.T) {
 	}
 	if payload.Plan.Runtime.Port != 8000 {
 		t.Fatalf("runtime port = %d", payload.Plan.Runtime.Port)
+	}
+	if payload.Plan.Runtime.HealthPath != "/" {
+		t.Fatalf("runtime health path = %q", payload.Plan.Runtime.HealthPath)
 	}
 	if payload.Plan.Build.Image != "phpsandbox/php:latest" {
 		t.Fatalf("build image = %q", payload.Plan.Build.Image)

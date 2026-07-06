@@ -25,7 +25,7 @@ type DockerClient interface {
 	Remove(ctx context.Context, containerID string) error
 	Inspect(ctx context.Context, containerID string) (bool, error)
 	Logs(ctx context.Context, containerID string, tail int) (string, error)
-	WaitHealthy(ctx context.Context, containerID string, timeout time.Duration) error
+	WaitHealthy(ctx context.Context, containerID string, hostPort int, healthPath string, timeout time.Duration) error
 }
 
 func NewDeployer(docker DockerClient, state *StateStore) *Deployer {
@@ -35,6 +35,12 @@ func NewDeployer(docker DockerClient, state *StateStore) *Deployer {
 func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(OutboundMessage)) error {
 	if strings.TrimSpace(payload.Plan.Build.Image) == "" {
 		return fmt.Errorf("deploy payload requires build.image")
+	}
+	if payload.Plan.Runtime.Port <= 0 {
+		return fmt.Errorf("deploy payload requires runtime.port")
+	}
+	if strings.TrimSpace(payload.Plan.Runtime.HealthPath) == "" {
+		return fmt.Errorf("deploy payload requires runtime.healthPath")
 	}
 
 	commandID := payload.DeploymentID
@@ -140,7 +146,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	}
 
 	emitLog("deploy", "Waiting for container to become healthy...")
-	if err := d.docker.WaitHealthy(ctx, containerID, 60*time.Second); err != nil {
+	if err := d.docker.WaitHealthy(ctx, containerID, port, payload.Plan.Runtime.HealthPath, 60*time.Second); err != nil {
 		_ = d.docker.Remove(ctx, containerID)
 		return fmt.Errorf("container health check: %w", err)
 	}

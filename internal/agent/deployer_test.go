@@ -16,6 +16,8 @@ type fakeDockerClient struct {
 	buildCommandWorkspaces []string
 	buildCommandImages     []string
 	runID                  string
+	waitHealthyHostPort    int
+	waitHealthyPath        string
 	waitHealthyFn          func(containerID string) error
 }
 
@@ -59,8 +61,10 @@ func (f *fakeDockerClient) Logs(_ context.Context, _ string, _ int) (string, err
 	return "", nil
 }
 
-func (f *fakeDockerClient) WaitHealthy(_ context.Context, containerID string, _ time.Duration) error {
+func (f *fakeDockerClient) WaitHealthy(_ context.Context, containerID string, hostPort int, healthPath string, _ time.Duration) error {
 	f.events = append(f.events, "healthy:"+containerID)
+	f.waitHealthyHostPort = hostPort
+	f.waitHealthyPath = healthPath
 	if f.waitHealthyFn != nil {
 		return f.waitHealthyFn(containerID)
 	}
@@ -210,7 +214,8 @@ func TestDeployerPreparesBundleBuildContextWithoutOverlayingSource(t *testing.T)
 				Commands: []string{"npm run build"},
 			},
 			Runtime: RuntimePlan{
-				Port: 8080,
+				Port:       8080,
+				HealthPath: "/health",
 			},
 		},
 		Bundle: &bundle,
@@ -263,7 +268,8 @@ func deployPayload(t *testing.T, deploymentID string) DeployPayload {
 				Image: "phpsandbox/php:latest",
 			},
 			Runtime: RuntimePlan{
-				Port: 8080,
+				Port:       8080,
+				HealthPath: "/health",
 			},
 		},
 		Env: map[string]string{},

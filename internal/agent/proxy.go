@@ -40,6 +40,9 @@ func (p *Proxy) OpenHTTP(ctx context.Context, deploymentID string, method string
 			req.Host = value
 			continue
 		}
+		if strings.EqualFold(name, "accept-encoding") {
+			continue
+		}
 		req.Header.Add(name, value)
 	}
 

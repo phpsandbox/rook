@@ -13,7 +13,7 @@ import (
 	"nhooyr.io/websocket"
 )
 
-func TestWebSocketTunnelManagerProxiesFrames(t *testing.T) {
+func TestRelayManagerProxiesWebSocketFrames(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
@@ -52,43 +52,45 @@ func TestWebSocketTunnelManagerProxiesFrames(t *testing.T) {
 	}
 
 	sender := newRecordingTunnelSender()
-	manager := NewWebSocketTunnelManager(NewProxy(state), sender)
+	manager := NewRelayManager(NewProxy(state), sender)
 	ctx := context.Background()
 
-	manager.Handle(ctx, InboundMessage{
-		Type:      "websocket.start",
-		CommandID: "cmd-1",
-		decoded: WebSocketStartPayload{
-			RequestID:    "req-1",
-			DeploymentID: "deployment-1",
-			Path:         "/socket",
-			Headers:      []HeaderPair{{"x-original-host", "app.example.test"}},
-		},
+	manager.Handle(ctx, RelayFrame{
+		Protocol:     RelayProtocol,
+		Type:         RelayFrameOpen,
+		StreamID:     "req-1",
+		Kind:         RelayKindHTTP,
+		DeploymentID: "deployment-1",
+		Method:       http.MethodGet,
+		Path:         "/socket",
+		Headers:      []HeaderPair{{"upgrade", "websocket"}, {"x-original-host", "app.example.test"}},
+		HasBody:      boolPtr(false),
 	})
 
 	messages := sender.waitForCount(t, 1, 2*time.Second)
-	if messages[0].Type != "websocket.open" {
+	if messages[0].Type != RelayFrameHeaders || messages[0].Status != http.StatusSwitchingProtocols {
 		t.Fatalf("open message = %#v", messages[0])
 	}
 
-	manager.Handle(ctx, InboundMessage{
-		Type:      "websocket.message",
-		CommandID: "cmd-1",
-		decoded: WebSocketMessagePayload{
-			RequestID: "req-1",
-			Data:      []byte("\x00payload"),
-			Text:      false,
-		},
+	manager.Handle(ctx, RelayFrame{
+		Protocol: RelayProtocol,
+		Type:     RelayFrameData,
+		StreamID: "req-1",
+		Kind:     RelayKindHTTP,
+		Data:     []byte("\x00payload"),
+		Text:     false,
 	})
 
 	messages = sender.waitForCount(t, 2, 2*time.Second)
-	if messages[1].Type != "websocket.message" || !messages[1].Text || string(messages[1].Data) != "echo" {
+	if messages[1].Type != RelayFrameData || !messages[1].Text || string(messages[1].Data) != "echo" {
 		t.Fatalf("echo message = %#v", messages[1])
 	}
 
-	manager.Handle(ctx, InboundMessage{
-		Type:      "websocket.close",
-		CommandID: "cmd-1",
-		decoded:   WebSocketClosePayload{RequestID: "req-1", Code: int(websocket.StatusNormalClosure)},
+	manager.Handle(ctx, RelayFrame{
+		Protocol: RelayProtocol,
+		Type:     RelayFrameEnd,
+		StreamID: "req-1",
+		Kind:     RelayKindHTTP,
+		Code:     int(websocket.StatusNormalClosure),
 	})
 }

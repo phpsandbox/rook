@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/phpsandbox/rook/internal/agent"
@@ -53,47 +52,45 @@ func run(ctx context.Context, cfg agent.Config) error {
 
 	deployer := agent.NewDeployer(docker, state)
 	proxy := agent.NewProxy(state)
-	ws := agent.NewWSClient(agentControlPlaneURL(cfg.ControlPlane, cfg.ServerID), cfg.Token)
-	tunnel := agent.NewHTTPTunnelManager(proxy, ws)
-	websocketTunnel := agent.NewWebSocketTunnelManager(proxy, ws)
+	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token)
+	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token)
+	relay := agent.NewRelayManager(proxy, dataWS)
 
 	fmt.Printf("rook %s connecting to %s (server: %s)\n", version, cfg.ControlPlane, cfg.ServerID)
 
-	if err := ws.ConnectWithRetry(ctx); err != nil {
-		return fmt.Errorf("connect: %w", err)
+	if err := controlWS.ConnectWithRetry(ctx); err != nil {
+		return fmt.Errorf("connect control plane: %w", err)
 	}
-	defer ws.Close()
+	defer controlWS.Close()
 
-	if err := sendHello(ctx, ws, cfg.ServerID, state.DeploymentIDs()); err != nil {
+	if err := dataWS.ConnectWithRetry(ctx); err != nil {
+		return fmt.Errorf("connect data plane: %w", err)
+	}
+	defer dataWS.Close()
+
+	if err := sendHello(ctx, controlWS, cfg.ServerID, state.DeploymentIDs()); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}
 
 	fmt.Println("connected, waiting for commands...")
 
+	go runRelayLoop(ctx, dataWS, relay)
+
 	for {
-		msg, err := ws.Read(ctx)
+		msg, err := controlWS.Read(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			fmt.Fprintf(os.Stderr, "read error: %v, reconnecting...\n", err)
-			if err := ws.ConnectWithRetry(ctx); err != nil {
+			if err := controlWS.ConnectWithRetry(ctx); err != nil {
 				return err
 			}
-			_ = sendHello(ctx, ws, cfg.ServerID, state.DeploymentIDs())
+			_ = sendHello(ctx, controlWS, cfg.ServerID, state.DeploymentIDs())
 			continue
 		}
 
-		if agent.IsHTTPTunnelMessage(msg.Type) {
-			tunnel.Handle(ctx, msg)
-			continue
-		}
-		if agent.IsWebSocketTunnelMessage(msg.Type) {
-			websocketTunnel.Handle(ctx, msg)
-			continue
-		}
-
-		go handleCommand(ctx, msg, ws, deployer, proxy)
+		go handleCommand(ctx, msg, controlWS, deployer, proxy)
 	}
 }
 
@@ -106,15 +103,37 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 	})
 }
 
-func agentControlPlaneURL(rawURL string, serverID string) string {
-	if strings.Contains(rawURL, "server_id=") {
+func runRelayLoop(ctx context.Context, ws *agent.WSClient, relay *agent.RelayManager) {
+	for {
+		var frame agent.RelayFrame
+		if err := ws.ReadMessagePack(ctx, &frame); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			relay.Reset(fmt.Errorf("data plane disconnected: %w", err))
+			fmt.Fprintf(os.Stderr, "data read error: %v, reconnecting...\n", err)
+			if err := ws.ConnectWithRetry(ctx); err != nil {
+				return
+			}
+			continue
+		}
+
+		relay.Handle(ctx, frame)
+	}
+}
+
+func agentPlaneURL(rawURL string, serverID string, channel string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
 		return rawURL
 	}
-	separator := "?"
-	if strings.Contains(rawURL, "?") {
-		separator = "&"
+	query := parsed.Query()
+	if query.Get("server_id") == "" {
+		query.Set("server_id", serverID)
 	}
-	return rawURL + separator + "server_id=" + url.QueryEscape(serverID)
+	query.Set("channel", channel)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSClient, deployer *agent.Deployer, proxy *agent.Proxy) {
