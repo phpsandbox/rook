@@ -16,27 +16,6 @@ func NewProxy(state *StateStore) *Proxy {
 	return &Proxy{state: state}
 }
 
-func (p *Proxy) HandleHTTP(deploymentID string, method string, path string, headers map[string]string, body string) (int, map[string]string, string, error) {
-	headerPairs := make([]HeaderPair, 0, len(headers))
-	for k, v := range headers {
-		headerPairs = append(headerPairs, HeaderPair{k, v})
-	}
-
-	resp, err := p.OpenHTTP(context.Background(), deploymentID, method, path, headerPairs, strings.NewReader(body))
-	if err != nil {
-		return 502, nil, "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-	respHeaders := map[string]string{}
-	for k := range resp.Header {
-		respHeaders[k] = resp.Header.Get(k)
-	}
-
-	return resp.StatusCode, respHeaders, string(respBody), nil
-}
-
 func (p *Proxy) OpenHTTP(ctx context.Context, deploymentID string, method string, path string, headers []HeaderPair, body io.Reader) (*http.Response, error) {
 	ds, ok := p.state.Get(deploymentID)
 	if !ok {

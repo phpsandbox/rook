@@ -60,12 +60,6 @@ type OutboundMessage struct {
 	Success bool            `json:"success,omitempty"`
 	Error   string          `json:"error,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
-
-	// http_response
-	RequestID string            `json:"requestId,omitempty"`
-	Status    int               `json:"status,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Body      string            `json:"body,omitempty"`
 }
 
 type ResourceInfo struct {
@@ -103,15 +97,6 @@ type DeletePayload struct {
 type LogsTailPayload struct {
 	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
 	Lines        int    `json:"lines" msgpack:"lines"`
-}
-
-type HTTPRequestPayload struct {
-	RequestID    string            `json:"requestId" msgpack:"requestId"`
-	DeploymentID string            `json:"deploymentId" msgpack:"deploymentId"`
-	Method       string            `json:"method" msgpack:"method"`
-	Path         string            `json:"path" msgpack:"path"`
-	Headers      map[string]string `json:"headers" msgpack:"headers"`
-	Body         string            `json:"body,omitempty" msgpack:"body,omitempty"`
 }
 
 type HeaderPair [2]string

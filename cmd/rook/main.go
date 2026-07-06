@@ -173,25 +173,6 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 		}
 		send(agent.OutboundMessage{Type: "result", Success: true, Content: content})
 
-	case "http":
-		var payload agent.HTTPRequestPayload
-		if err := msg.DecodePayload(&payload); err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		status, headers, body, err := proxy.HandleHTTP(payload.DeploymentID, payload.Method, payload.Path, payload.Headers, payload.Body)
-		if err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		send(agent.OutboundMessage{
-			Type:      "http_response",
-			RequestID: payload.RequestID,
-			Status:    status,
-			Headers:   headers,
-			Body:      body,
-		})
-
 	default:
 		send(agent.OutboundMessage{Type: "result", Success: false, Error: fmt.Sprintf("unsupported command %q", msg.Type)})
 	}
