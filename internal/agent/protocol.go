@@ -73,9 +73,19 @@ type ResourceInfo struct {
 type DeployPayload struct {
 	DeploymentID string            `json:"deploymentId" msgpack:"deploymentId"`
 	Source       SourceRef         `json:"source" msgpack:"source"`
+	Manifest     DeployManifest    `json:"manifest" msgpack:"manifest"`
 	Plan         Plan              `json:"plan" msgpack:"plan"`
 	Bundle       *DeployBundle     `json:"bundle,omitempty" msgpack:"bundle,omitempty"`
 	Env          map[string]string `json:"env" msgpack:"env"`
+}
+
+type DeployManifest struct {
+	SchemaVersion int                 `json:"schemaVersion" msgpack:"schemaVersion"`
+	Build         DeployManifestBuild `json:"build" msgpack:"build"`
+}
+
+type DeployManifestBuild struct {
+	KeepWorkspace bool `json:"keepWorkspace" msgpack:"keepWorkspace"`
 }
 
 type DeployBundle struct {

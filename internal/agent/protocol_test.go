@@ -9,6 +9,12 @@ func TestInboundMessageDecodePayloadFromMessagePackDecodedMap(t *testing.T) {
 			"provider": "path",
 			"path":     "/tmp/source",
 		},
+		"manifest": map[string]any{
+			"schemaVersion": 1,
+			"build": map[string]any{
+				"keepWorkspace": true,
+			},
+		},
 		"plan": map[string]any{
 			"strategy": "laravel",
 			"build": map[string]any{
@@ -40,6 +46,9 @@ func TestInboundMessageDecodePayloadFromMessagePackDecodedMap(t *testing.T) {
 	}
 	if payload.Source.Path != "/tmp/source" {
 		t.Fatalf("source = %#v", payload.Source)
+	}
+	if payload.Manifest.SchemaVersion != 1 || !payload.Manifest.Build.KeepWorkspace {
+		t.Fatalf("manifest = %#v", payload.Manifest)
 	}
 	if payload.Plan.Runtime.Port != 8000 {
 		t.Fatalf("runtime port = %d", payload.Plan.Runtime.Port)

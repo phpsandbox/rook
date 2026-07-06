@@ -11,6 +11,7 @@ import (
 )
 
 const sourceContextDir = "app"
+const deployManifestSchemaVersion = 1
 
 type Deployer struct {
 	docker DockerClient
@@ -33,6 +34,9 @@ func NewDeployer(docker DockerClient, state *StateStore) *Deployer {
 }
 
 func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(OutboundMessage)) error {
+	if payload.Manifest.SchemaVersion != deployManifestSchemaVersion {
+		return fmt.Errorf("deploy payload requires manifest.schemaVersion %d", deployManifestSchemaVersion)
+	}
 	if strings.TrimSpace(payload.Plan.Build.Image) == "" {
 		return fmt.Errorf("deploy payload requires build.image")
 	}
@@ -69,7 +73,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	}
 	sourceDir := filepath.Join(workDir, "source")
 	contextDir := filepath.Join(workDir, "context")
-	if keepBuildWorkDir() {
+	if payload.Manifest.Build.KeepWorkspace {
 		emitLog("build", "Keeping build workspace at "+workDir)
 	} else {
 		defer os.RemoveAll(workDir)
@@ -232,15 +236,6 @@ func hostPortAvailable(port int) bool {
 	}
 	_ = listener.Close()
 	return true
-}
-
-func keepBuildWorkDir() bool {
-	switch os.Getenv("ROOK_KEEP_BUILD_WORKDIR") {
-	case "1", "true", "TRUE", "yes", "YES":
-		return true
-	default:
-		return false
-	}
 }
 
 func exists(path string) bool {

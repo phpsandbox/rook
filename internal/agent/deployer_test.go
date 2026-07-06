@@ -150,13 +150,23 @@ func TestDeployerRequiresBuildImage(t *testing.T) {
 	}
 }
 
-func TestDeployerCanKeepBuildWorkspaceForInspection(t *testing.T) {
-	t.Setenv("ROOK_KEEP_BUILD_WORKDIR", "1")
+func TestDeployerRequiresManifest(t *testing.T) {
+	state := NewStateStore(t.TempDir())
+	deployer := NewDeployer(&fakeDockerClient{}, state)
+	payload := deployPayload(t, "deploy-missing-manifest")
+	payload.Manifest.SchemaVersion = 0
 
+	if err := deployer.Deploy(context.Background(), payload, func(OutboundMessage) {}); err == nil {
+		t.Fatal("expected missing manifest error")
+	}
+}
+
+func TestDeployerCanKeepBuildWorkspaceForInspection(t *testing.T) {
 	state := NewStateStore(t.TempDir())
 	docker := &fakeDockerClient{runID: "new-container"}
 	deployer := NewDeployer(docker, state)
 	payload := deployPayload(t, "deploy-keep")
+	payload.Manifest.Build.KeepWorkspace = true
 
 	if err := deployer.Deploy(context.Background(), payload, func(OutboundMessage) {}); err != nil {
 		t.Fatal(err)
@@ -175,8 +185,6 @@ func TestDeployerCanKeepBuildWorkspaceForInspection(t *testing.T) {
 }
 
 func TestDeployerPreparesBundleBuildContextWithoutOverlayingSource(t *testing.T) {
-	t.Setenv("ROOK_KEEP_BUILD_WORKDIR", "1")
-
 	state := NewStateStore(t.TempDir())
 	docker := &fakeDockerClient{runID: "new-container"}
 	deployer := NewDeployer(docker, state)
@@ -207,6 +215,12 @@ func TestDeployerPreparesBundleBuildContextWithoutOverlayingSource(t *testing.T)
 		Source: SourceRef{
 			Provider: SourceProviderPath,
 			Path:     sourceDir,
+		},
+		Manifest: DeployManifest{
+			SchemaVersion: deployManifestSchemaVersion,
+			Build: DeployManifestBuild{
+				KeepWorkspace: true,
+			},
 		},
 		Plan: Plan{
 			Build: BuildPlan{
@@ -262,6 +276,10 @@ func deployPayload(t *testing.T, deploymentID string) DeployPayload {
 		Source: SourceRef{
 			Provider: SourceProviderPath,
 			Path:     sourceDir,
+		},
+		Manifest: DeployManifest{
+			SchemaVersion: deployManifestSchemaVersion,
+			Build:         DeployManifestBuild{},
 		},
 		Plan: Plan{
 			Build: BuildPlan{
