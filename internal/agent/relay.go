@@ -14,7 +14,7 @@ import (
 const relayChunkSize = 32 * 1024
 
 type MessagePackSender interface {
-	SendMessagePack(context.Context, any) error
+	SendRelayFrame(context.Context, RelayFrame) error
 }
 
 type RelayManager struct {
@@ -156,7 +156,7 @@ func (m *RelayManager) handleWebSocketOpen(ctx context.Context, frame RelayFrame
 	m.webSocketStreams[frame.StreamID] = &webSocketRelayStream{conn: conn, cancel: cancel}
 	m.mu.Unlock()
 
-	_ = m.ws.SendMessagePack(ctx, RelayFrame{
+	_ = m.ws.SendRelayFrame(ctx, RelayFrame{
 		Protocol: RelayProtocol,
 		Type:     RelayFrameHeaders,
 		StreamID: frame.StreamID,
@@ -224,7 +224,7 @@ func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, bod
 	}
 	defer resp.Body.Close()
 
-	if err := m.ws.SendMessagePack(ctx, RelayFrame{
+	if err := m.ws.SendRelayFrame(ctx, RelayFrame{
 		Protocol: RelayProtocol,
 		Type:     RelayFrameHeaders,
 		StreamID: frame.StreamID,
@@ -241,7 +241,7 @@ func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, bod
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buffer[:n])
-			if err := m.ws.SendMessagePack(ctx, RelayFrame{
+			if err := m.ws.SendRelayFrame(ctx, RelayFrame{
 				Protocol: RelayProtocol,
 				Type:     RelayFrameData,
 				StreamID: frame.StreamID,
@@ -260,7 +260,7 @@ func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, bod
 		}
 	}
 
-	_ = m.ws.SendMessagePack(ctx, RelayFrame{
+	_ = m.ws.SendRelayFrame(ctx, RelayFrame{
 		Protocol: RelayProtocol,
 		Type:     RelayFrameEnd,
 		StreamID: frame.StreamID,
@@ -281,7 +281,7 @@ func (m *RelayManager) readWebSocket(ctx context.Context, streamID string, conn 
 			if status < 0 {
 				status = websocket.StatusAbnormalClosure
 			}
-			_ = m.ws.SendMessagePack(ctx, RelayFrame{
+			_ = m.ws.SendRelayFrame(ctx, RelayFrame{
 				Protocol: RelayProtocol,
 				Type:     RelayFrameEnd,
 				StreamID: streamID,
@@ -292,7 +292,7 @@ func (m *RelayManager) readWebSocket(ctx context.Context, streamID string, conn 
 			return
 		}
 
-		if err := m.ws.SendMessagePack(ctx, RelayFrame{
+		if err := m.ws.SendRelayFrame(ctx, RelayFrame{
 			Protocol: RelayProtocol,
 			Type:     RelayFrameData,
 			StreamID: streamID,
@@ -348,7 +348,7 @@ func (m *RelayManager) sendReset(ctx context.Context, streamID string, kind stri
 	if streamID == "" {
 		return
 	}
-	_ = m.ws.SendMessagePack(ctx, RelayFrame{
+	_ = m.ws.SendRelayFrame(ctx, RelayFrame{
 		Protocol: RelayProtocol,
 		Type:     RelayFrameReset,
 		StreamID: streamID,

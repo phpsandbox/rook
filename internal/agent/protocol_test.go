@@ -1,43 +1,50 @@
 package agent
 
-import "testing"
+import (
+	"testing"
 
-func TestInboundMessageDecodePayloadFromMessagePackDecodedMap(t *testing.T) {
-	raw := map[string]any{
-		"deploymentId": "dep-1",
-		"source": map[string]any{
-			"provider": "path",
-			"path":     "/tmp/source",
+	"github.com/vmihailenco/msgpack/v5"
+)
+
+func TestInboundMessageDecodePayloadFromMessagePackPayload(t *testing.T) {
+	raw, err := msgpack.Marshal(DeployPayload{
+		DeploymentID: "dep-1",
+		Source: SourceRef{
+			Provider: SourceProviderPath,
+			Path:     "/tmp/source",
 		},
-		"manifest": map[string]any{
-			"schemaVersion": 1,
-			"build": map[string]any{
-				"keepWorkspace": true,
+		Manifest: DeployManifest{
+			SchemaVersion: 1,
+			Build: DeployManifestBuild{
+				KeepWorkspace: true,
 			},
 		},
-		"plan": map[string]any{
-			"strategy": "laravel",
-			"build": map[string]any{
-				"image": "phpsandbox/php:latest",
+		Plan: Plan{
+			Strategy: "laravel",
+			Build: BuildPlan{
+				Image: "phpsandbox/php:latest",
 			},
-			"runtime": map[string]any{
-				"port":       8000,
-				"healthPath": "/",
+			Runtime: RuntimePlan{
+				Port:       8000,
+				HealthPath: "/",
 			},
 		},
-		"bundle": map[string]any{
-			"format": "tar.gz",
-			"size":   int8(3),
-			"sha256": "sha256:test",
-			"data":   []byte("abc"),
+		Bundle: &DeployBundle{
+			Format: "tar.gz",
+			Size:   3,
+			SHA256: "sha256:test",
+			Data:   []byte("abc"),
 		},
-		"env": map[string]any{
+		Env: map[string]string{
 			"APP_ENV": "production",
 		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	var payload DeployPayload
-	if err := (InboundMessage{decoded: raw}).DecodePayload(&payload); err != nil {
+	payload, err := (InboundMessage{messagePackPayload: raw}).DecodeDeployPayload()
+	if err != nil {
 		t.Fatal(err)
 	}
 

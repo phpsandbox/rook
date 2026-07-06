@@ -7,32 +7,54 @@ import (
 )
 
 type InboundMessage struct {
-	Type      string          `json:"type"`
-	CommandID string          `json:"commandId,omitempty"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
-	decoded   any
+	Type               string          `json:"type"`
+	CommandID          string          `json:"commandId,omitempty"`
+	Payload            json.RawMessage `json:"payload,omitempty"`
+	messagePackPayload msgpack.RawMessage
 }
 
-func (m InboundMessage) DecodePayload(v any) error {
+func (m InboundMessage) DecodeDeployPayload() (DeployPayload, error) {
+	var payload DeployPayload
 	if len(m.Payload) > 0 {
-		return json.Unmarshal(m.Payload, v)
+		return payload, json.Unmarshal(m.Payload, &payload)
 	}
-	if m.decoded == nil {
-		return nil
+	if len(m.messagePackPayload) > 0 {
+		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
 	}
-	data, err := msgpackMarshal(m.decoded)
-	if err != nil {
-		return err
-	}
-	return msgpackUnmarshal(data, v)
+	return payload, nil
 }
 
-func msgpackMarshal(v any) ([]byte, error) {
-	return msgpack.Marshal(v)
+func (m InboundMessage) DecodeStopPayload() (StopPayload, error) {
+	var payload StopPayload
+	if len(m.Payload) > 0 {
+		return payload, json.Unmarshal(m.Payload, &payload)
+	}
+	if len(m.messagePackPayload) > 0 {
+		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
+	}
+	return payload, nil
 }
 
-func msgpackUnmarshal(data []byte, v any) error {
-	return msgpack.Unmarshal(data, v)
+func (m InboundMessage) DecodeDeletePayload() (DeletePayload, error) {
+	var payload DeletePayload
+	if len(m.Payload) > 0 {
+		return payload, json.Unmarshal(m.Payload, &payload)
+	}
+	if len(m.messagePackPayload) > 0 {
+		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
+	}
+	return payload, nil
+}
+
+func (m InboundMessage) DecodeLogsTailPayload() (LogsTailPayload, error) {
+	var payload LogsTailPayload
+	if len(m.Payload) > 0 {
+		return payload, json.Unmarshal(m.Payload, &payload)
+	}
+	if len(m.messagePackPayload) > 0 {
+		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
+	}
+	return payload, nil
 }
 
 type OutboundMessage struct {

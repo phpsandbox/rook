@@ -159,8 +159,7 @@ func newRecordingTunnelSender() *recordingTunnelSender {
 	return &recordingTunnelSender{done: make(chan struct{})}
 }
 
-func (s *recordingTunnelSender) SendMessagePack(ctx context.Context, msg any) error {
-	tunnelMessage := msg.(RelayFrame)
+func (s *recordingTunnelSender) SendRelayFrame(ctx context.Context, tunnelMessage RelayFrame) error {
 	s.mu.Lock()
 	s.messages = append(s.messages, tunnelMessage)
 	if tunnelMessage.Type == RelayFrameEnd || tunnelMessage.Type == RelayFrameReset {

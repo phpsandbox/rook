@@ -105,8 +105,8 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 
 func runRelayLoop(ctx context.Context, ws *agent.WSClient, relay *agent.RelayManager) {
 	for {
-		var frame agent.RelayFrame
-		if err := ws.ReadMessagePack(ctx, &frame); err != nil {
+		frame, err := ws.ReadRelayFrame(ctx)
+		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
@@ -144,8 +144,8 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 
 	switch msg.Type {
 	case "deploy":
-		var payload agent.DeployPayload
-		if err := msg.DecodePayload(&payload); err != nil {
+		payload, err := msg.DecodeDeployPayload()
+		if err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
@@ -156,8 +156,8 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 		send(agent.OutboundMessage{Type: "result", Success: true})
 
 	case "stop":
-		var payload agent.StopPayload
-		if err := msg.DecodePayload(&payload); err != nil {
+		payload, err := msg.DecodeStopPayload()
+		if err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
@@ -168,8 +168,8 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 		send(agent.OutboundMessage{Type: "result", Success: true})
 
 	case "delete":
-		var payload agent.DeletePayload
-		if err := msg.DecodePayload(&payload); err != nil {
+		payload, err := msg.DecodeDeletePayload()
+		if err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
@@ -180,8 +180,8 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 		send(agent.OutboundMessage{Type: "result", Success: true})
 
 	case "logs.tail":
-		var payload agent.LogsTailPayload
-		if err := msg.DecodePayload(&payload); err != nil {
+		payload, err := msg.DecodeLogsTailPayload()
+		if err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}

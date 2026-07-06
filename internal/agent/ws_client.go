@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vmihailenco/msgpack/v5"
 	"nhooyr.io/websocket"
 )
 
@@ -64,8 +65,8 @@ func (c *WSClient) Send(ctx context.Context, msg OutboundMessage) error {
 	return conn.Write(ctx, websocket.MessageText, data)
 }
 
-func (c *WSClient) SendMessagePack(ctx context.Context, msg any) error {
-	data, err := msgpackMarshal(msg)
+func (c *WSClient) SendRelayFrame(ctx context.Context, frame RelayFrame) error {
+	data, err := msgpack.Marshal(frame)
 	if err != nil {
 		return fmt.Errorf("marshal outbound messagepack: %w", err)
 	}
@@ -94,16 +95,16 @@ func (c *WSClient) Read(ctx context.Context) (InboundMessage, error) {
 		}
 	case websocket.MessageBinary:
 		var wire struct {
-			Type      string `msgpack:"type"`
-			CommandID string `msgpack:"commandId"`
-			Payload   any    `msgpack:"payload"`
+			Type      string             `msgpack:"type"`
+			CommandID string             `msgpack:"commandId"`
+			Payload   msgpack.RawMessage `msgpack:"payload"`
 		}
-		if err := msgpackUnmarshal(data, &wire); err != nil {
+		if err := msgpack.Unmarshal(data, &wire); err != nil {
 			return InboundMessage{}, fmt.Errorf("unmarshal inbound messagepack: %w", err)
 		}
 		msg.Type = wire.Type
 		msg.CommandID = wire.CommandID
-		msg.decoded = wire.Payload
+		msg.messagePackPayload = wire.Payload
 	default:
 		return InboundMessage{}, fmt.Errorf("unsupported websocket message type %v", messageType)
 	}
@@ -113,15 +114,19 @@ func (c *WSClient) Read(ctx context.Context) (InboundMessage, error) {
 	return msg, nil
 }
 
-func (c *WSClient) ReadMessagePack(ctx context.Context, v any) error {
+func (c *WSClient) ReadRelayFrame(ctx context.Context) (RelayFrame, error) {
 	messageType, data, err := c.ReadRaw(ctx)
 	if err != nil {
-		return err
+		return RelayFrame{}, err
 	}
 	if messageType != websocket.MessageBinary {
-		return fmt.Errorf("expected binary messagepack frame, got websocket message type %v", messageType)
+		return RelayFrame{}, fmt.Errorf("expected binary messagepack frame, got websocket message type %v", messageType)
 	}
-	return msgpackUnmarshal(data, v)
+	var frame RelayFrame
+	if err := msgpack.Unmarshal(data, &frame); err != nil {
+		return RelayFrame{}, err
+	}
+	return frame, nil
 }
 
 func (c *WSClient) ReadRaw(ctx context.Context) (websocket.MessageType, []byte, error) {
