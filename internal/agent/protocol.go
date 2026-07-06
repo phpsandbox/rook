@@ -53,8 +53,8 @@ type OutboundMessage struct {
 	Content string `json:"content,omitempty"`
 
 	// phase
-	Phase string         `json:"phase,omitempty"`
-	Data  map[string]any `json:"data,omitempty"`
+	Phase string           `json:"phase,omitempty"`
+	Data  *DeployPhaseData `json:"data,omitempty"`
 
 	// result
 	Success bool            `json:"success,omitempty"`
@@ -86,6 +86,11 @@ type DeployManifest struct {
 
 type DeployManifestBuild struct {
 	KeepWorkspace bool `json:"keepWorkspace" msgpack:"keepWorkspace"`
+}
+
+type DeployPhaseData struct {
+	Port        int    `json:"port"`
+	ContainerID string `json:"containerId"`
 }
 
 type DeployBundle struct {

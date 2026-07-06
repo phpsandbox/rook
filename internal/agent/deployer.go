@@ -56,7 +56,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 			Content:   content,
 		})
 	}
-	emitPhase := func(name string, data map[string]any) {
+	emitPhase := func(name string, data *DeployPhaseData) {
 		send(OutboundMessage{
 			Type:      "phase",
 			CommandID: commandID,
@@ -173,7 +173,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		_ = d.docker.Remove(ctx, existing.ContainerID)
 	}
 
-	emitPhase("deploy.completed", map[string]any{"port": port, "containerId": containerID})
+	emitPhase("deploy.completed", &DeployPhaseData{Port: port, ContainerID: containerID})
 	return nil
 }
 
