@@ -14,9 +14,9 @@ import (
 func TestApplyDeployBundleExtractsVerifiedRuntimeFiles(t *testing.T) {
 	workspace := t.TempDir()
 	bundle := testDeployBundle(t, map[string]string{
-		"Dockerfile":                           "FROM scratch\n",
-		".phpsandbox/cloudflare/launcher.sh":   "#!/bin/sh\n",
-		".phpsandbox/cloudflare/laravel-start": "#!/bin/sh\n",
+		"Dockerfile": "FROM scratch\n",
+		".phpsandbox/runtime/laravel/laravel-start.sh": "#!/bin/sh\n",
+		".phpsandbox/runtime/laravel/Caddyfile":        ":8000\n",
 	})
 
 	if err := ApplyDeployBundle(workspace, bundle); err != nil {

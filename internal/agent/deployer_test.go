@@ -11,17 +11,23 @@ import (
 )
 
 type fakeDockerClient struct {
-	events        []string
-	runID         string
-	waitHealthyFn func(containerID string) error
+	events                 []string
+	buildContext           string
+	buildCommandWorkspaces []string
+	buildCommandImages     []string
+	runID                  string
+	waitHealthyFn          func(containerID string) error
 }
 
-func (f *fakeDockerClient) Build(_ context.Context, _ string, tag string, _ func(string)) error {
+func (f *fakeDockerClient) Build(_ context.Context, contextDir string, tag string, _ func(string)) error {
+	f.buildContext = contextDir
 	f.events = append(f.events, "build:"+tag)
 	return nil
 }
 
-func (f *fakeDockerClient) RunBuildCommand(_ context.Context, _ string, command string, _ map[string]string, _ func(string)) error {
+func (f *fakeDockerClient) RunBuildCommand(_ context.Context, workspace string, image string, command string, _ map[string]string, _ func(string)) error {
+	f.buildCommandWorkspaces = append(f.buildCommandWorkspaces, workspace)
+	f.buildCommandImages = append(f.buildCommandImages, image)
 	f.events = append(f.events, "build-command:"+command)
 	return nil
 }
@@ -129,6 +135,115 @@ func TestDeployerRedeployKeepsOldStateWhenNewContainerFailsHealth(t *testing.T) 
 	}
 }
 
+func TestDeployerRequiresBuildImage(t *testing.T) {
+	state := NewStateStore(t.TempDir())
+	deployer := NewDeployer(&fakeDockerClient{}, state)
+	payload := deployPayload(t, "deploy-missing-build-image")
+	payload.Plan.Build.Image = ""
+
+	if err := deployer.Deploy(context.Background(), payload, func(OutboundMessage) {}); err == nil {
+		t.Fatal("expected missing build image error")
+	}
+}
+
+func TestDeployerCanKeepBuildWorkspaceForInspection(t *testing.T) {
+	t.Setenv("ROOK_KEEP_BUILD_WORKDIR", "1")
+
+	state := NewStateStore(t.TempDir())
+	docker := &fakeDockerClient{runID: "new-container"}
+	deployer := NewDeployer(docker, state)
+	payload := deployPayload(t, "deploy-keep")
+
+	if err := deployer.Deploy(context.Background(), payload, func(OutboundMessage) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	workDir := filepath.Join(os.TempDir(), "rook", payload.DeploymentID)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(workDir)
+	})
+	if _, err := os.Stat(filepath.Join(workDir, "source", "Dockerfile")); err != nil {
+		t.Fatalf("expected kept build workspace: %v", err)
+	}
+	if docker.buildContext != filepath.Join(workDir, "source") {
+		t.Fatalf("build context = %q", docker.buildContext)
+	}
+}
+
+func TestDeployerPreparesBundleBuildContextWithoutOverlayingSource(t *testing.T) {
+	t.Setenv("ROOK_KEEP_BUILD_WORKDIR", "1")
+
+	state := NewStateStore(t.TempDir())
+	docker := &fakeDockerClient{runID: "new-container"}
+	deployer := NewDeployer(docker, state)
+
+	sourceDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(sourceDir, ".phpsandbox", "runtime", "laravel"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "Dockerfile"), []byte("FROM user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, ".phpsandbox", "runtime", "laravel", "Caddyfile"), []byte("user\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(sourceDir, "node_modules", "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	bundle := testDeployBundle(t, map[string]string{
+		"Dockerfile":                                   "FROM generated\nCOPY app/ /app\n",
+		".dockerignore":                                "app/.git\napp/node_modules\n",
+		".phpsandbox/runtime/laravel/Caddyfile":        "generated\n",
+		".phpsandbox/runtime/laravel/laravel-start.sh": "#!/bin/sh\n",
+	})
+	bundle.Layout = DeployBundleLayoutDockerContextV1
+	payload := DeployPayload{
+		DeploymentID: "deploy-bundle-context",
+		Source: SourceRef{
+			Provider: SourceProviderPath,
+			Path:     sourceDir,
+		},
+		Plan: Plan{
+			Build: BuildPlan{
+				Image:    "custom-build:latest",
+				Commands: []string{"npm run build"},
+			},
+			Runtime: RuntimePlan{
+				Port: 8080,
+			},
+		},
+		Bundle: &bundle,
+		Env:    map[string]string{},
+	}
+
+	if err := deployer.Deploy(context.Background(), payload, func(OutboundMessage) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	workDir := filepath.Join(os.TempDir(), "rook", payload.DeploymentID)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(workDir)
+	})
+	if docker.buildContext != filepath.Join(workDir, "context") {
+		t.Fatalf("build context = %q", docker.buildContext)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, "source")); !os.IsNotExist(err) {
+		t.Fatalf("source should be cloned directly into context/app for bundled deploys: %v", err)
+	}
+	if len(docker.buildCommandWorkspaces) != 1 || docker.buildCommandWorkspaces[0] != filepath.Join(docker.buildContext, "app") {
+		t.Fatalf("build command workspaces = %#v", docker.buildCommandWorkspaces)
+	}
+	if len(docker.buildCommandImages) != 1 || docker.buildCommandImages[0] != "custom-build:latest" {
+		t.Fatalf("build command images = %#v", docker.buildCommandImages)
+	}
+	assertFileContent(t, filepath.Join(docker.buildContext, "Dockerfile"), "FROM generated\nCOPY app/ /app\n")
+	assertFileContent(t, filepath.Join(docker.buildContext, ".phpsandbox", "runtime", "laravel", "Caddyfile"), "generated\n")
+	assertFileContent(t, filepath.Join(docker.buildContext, "app", "Dockerfile"), "FROM user\n")
+	assertFileContent(t, filepath.Join(docker.buildContext, "app", ".phpsandbox", "runtime", "laravel", "Caddyfile"), "user\n")
+	assertFileContent(t, filepath.Join(docker.buildContext, ".dockerignore"), "app/.git\napp/node_modules\n")
+}
+
 func deployPayload(t *testing.T, deploymentID string) DeployPayload {
 	t.Helper()
 
@@ -144,10 +259,25 @@ func deployPayload(t *testing.T, deploymentID string) DeployPayload {
 			Path:     sourceDir,
 		},
 		Plan: Plan{
+			Build: BuildPlan{
+				Image: "phpsandbox/php:latest",
+			},
 			Runtime: RuntimePlan{
 				Port: 8080,
 			},
 		},
 		Env: map[string]string{},
+	}
+}
+
+func assertFileContent(t *testing.T, path string, expected string) {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != expected {
+		t.Fatalf("%s = %q, want %q", path, content, expected)
 	}
 }
