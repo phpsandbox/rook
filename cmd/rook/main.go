@@ -54,6 +54,8 @@ func run(ctx context.Context, cfg agent.Config) error {
 	deployer := agent.NewDeployer(docker, state)
 	proxy := agent.NewProxy(state)
 	ws := agent.NewWSClient(agentControlPlaneURL(cfg.ControlPlane, cfg.ServerID), cfg.Token)
+	tunnel := agent.NewHTTPTunnelManager(proxy, ws)
+	websocketTunnel := agent.NewWebSocketTunnelManager(proxy, ws)
 
 	fmt.Printf("rook %s connecting to %s (server: %s)\n", version, cfg.ControlPlane, cfg.ServerID)
 
@@ -79,6 +81,15 @@ func run(ctx context.Context, cfg agent.Config) error {
 				return err
 			}
 			_ = sendHello(ctx, ws, cfg.ServerID, state.DeploymentIDs())
+			continue
+		}
+
+		if agent.IsHTTPTunnelMessage(msg.Type) {
+			tunnel.Handle(ctx, msg)
+			continue
+		}
+		if agent.IsWebSocketTunnelMessage(msg.Type) {
+			websocketTunnel.Handle(ctx, msg)
 			continue
 		}
 

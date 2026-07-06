@@ -49,20 +49,35 @@ func (c *WSClient) Close() error {
 }
 
 func (c *WSClient) Send(ctx context.Context, msg OutboundMessage) error {
-	c.mu.Lock()
-	conn := c.conn
-	c.mu.Unlock()
-
-	if conn == nil {
-		return fmt.Errorf("not connected")
-	}
-
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal outbound message: %w", err)
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	conn := c.conn
+	if conn == nil {
+		return fmt.Errorf("not connected")
+	}
+
 	return conn.Write(ctx, websocket.MessageText, data)
+}
+
+func (c *WSClient) SendMessagePack(ctx context.Context, msg any) error {
+	data, err := msgpackMarshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal outbound messagepack: %w", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	conn := c.conn
+	if conn == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	return conn.Write(ctx, websocket.MessageBinary, data)
 }
 
 func (c *WSClient) Read(ctx context.Context) (InboundMessage, error) {

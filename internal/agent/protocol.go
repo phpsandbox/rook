@@ -113,3 +113,55 @@ type HTTPRequestPayload struct {
 	Headers      map[string]string `json:"headers" msgpack:"headers"`
 	Body         string            `json:"body,omitempty" msgpack:"body,omitempty"`
 }
+
+type HeaderPair [2]string
+
+type HTTPStartPayload struct {
+	RequestID    string       `json:"requestId" msgpack:"requestId"`
+	DeploymentID string       `json:"deploymentId" msgpack:"deploymentId"`
+	Method       string       `json:"method" msgpack:"method"`
+	Path         string       `json:"path" msgpack:"path"`
+	Headers      []HeaderPair `json:"headers,omitempty" msgpack:"headers,omitempty"`
+}
+
+type HTTPBodyPayload struct {
+	RequestID string `json:"requestId" msgpack:"requestId"`
+	Data      []byte `json:"data" msgpack:"data"`
+}
+
+type HTTPEndPayload struct {
+	RequestID string `json:"requestId" msgpack:"requestId"`
+}
+
+type WebSocketStartPayload struct {
+	RequestID    string       `json:"requestId" msgpack:"requestId"`
+	DeploymentID string       `json:"deploymentId" msgpack:"deploymentId"`
+	Path         string       `json:"path" msgpack:"path"`
+	Headers      []HeaderPair `json:"headers,omitempty" msgpack:"headers,omitempty"`
+}
+
+type WebSocketMessagePayload struct {
+	RequestID string `json:"requestId" msgpack:"requestId"`
+	Data      []byte `json:"data" msgpack:"data"`
+	Text      bool   `json:"text" msgpack:"text"`
+}
+
+type WebSocketClosePayload struct {
+	RequestID string `json:"requestId" msgpack:"requestId"`
+	Code      int    `json:"code,omitempty" msgpack:"code,omitempty"`
+	Reason    string `json:"reason,omitempty" msgpack:"reason,omitempty"`
+}
+
+type HTTPTunnelMessage struct {
+	Type      string `json:"type" msgpack:"type"`
+	CommandID string `json:"commandId,omitempty" msgpack:"commandId,omitempty"`
+
+	RequestID string       `json:"requestId,omitempty" msgpack:"requestId,omitempty"`
+	Status    int          `json:"status,omitempty" msgpack:"status,omitempty"`
+	Headers   []HeaderPair `json:"headers,omitempty" msgpack:"headers,omitempty"`
+	Data      []byte       `json:"data,omitempty" msgpack:"data,omitempty"`
+	Text      bool         `json:"text,omitempty" msgpack:"text,omitempty"`
+	Code      int          `json:"code,omitempty" msgpack:"code,omitempty"`
+	Reason    string       `json:"reason,omitempty" msgpack:"reason,omitempty"`
+	Error     string       `json:"error,omitempty" msgpack:"error,omitempty"`
+}
