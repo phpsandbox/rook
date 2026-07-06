@@ -82,11 +82,11 @@ type DeployPayload struct {
 	Plan         Plan              `json:"plan" msgpack:"plan"`
 	Bundle       *DeployBundle     `json:"bundle,omitempty" msgpack:"bundle,omitempty"`
 	Env          map[string]string `json:"env" msgpack:"env"`
-	Options      map[string]any    `json:"options,omitempty" msgpack:"options,omitempty"`
 }
 
 type DeployBundle struct {
 	Format string `json:"format" msgpack:"format"`
+	Layout string `json:"layout,omitempty" msgpack:"layout,omitempty"`
 	Size   int64  `json:"size" msgpack:"size"`
 	SHA256 string `json:"sha256" msgpack:"sha256"`
 	Data   []byte `json:"data" msgpack:"data"`

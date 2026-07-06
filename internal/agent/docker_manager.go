@@ -32,7 +32,12 @@ func (d *DockerManager) Build(ctx context.Context, contextDir string, tag string
 	return streamCommand(cmd, onOutput)
 }
 
-func (d *DockerManager) RunBuildCommand(ctx context.Context, workspace string, command string, env map[string]string, onOutput func(string)) error {
+func (d *DockerManager) RunBuildCommand(ctx context.Context, workspace string, image string, command string, env map[string]string, onOutput func(string)) error {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return fmt.Errorf("build image is required")
+	}
+
 	absWorkspace, err := filepath.Abs(workspace)
 	if err != nil {
 		return err
@@ -52,7 +57,7 @@ func (d *DockerManager) RunBuildCommand(ctx context.Context, workspace string, c
 	for _, key := range keys {
 		args = append(args, "-e", key+"="+env[key])
 	}
-	args = append(args, "phpsandbox/php:latest", "sh", "-lc", command)
+	args = append(args, image, "sh", "-lc", command)
 
 	cmd := exec.CommandContext(ctx, d.bin, args...)
 	return streamCommand(cmd, onOutput)

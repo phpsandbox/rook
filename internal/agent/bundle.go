@@ -15,6 +15,8 @@ import (
 
 const MaxDeployBundleSize = 5 * 1024 * 1024
 
+const DeployBundleLayoutDockerContextV1 = "docker-context-v1"
+
 func ApplyDeployBundle(workspace string, bundle DeployBundle) error {
 	if bundle.Format != "tar.gz" {
 		return fmt.Errorf("unsupported deploy bundle format %q", bundle.Format)

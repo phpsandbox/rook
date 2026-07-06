@@ -18,20 +18,13 @@ type SourceRef struct {
 }
 
 type BuildPlan struct {
-	Strategy string   `json:"strategy" msgpack:"strategy"`
+	Image    string   `json:"image" msgpack:"image"`
 	Commands []string `json:"commands" msgpack:"commands"`
-	Workdir  string   `json:"workdir" msgpack:"workdir"`
 }
 
 type RuntimePlan struct {
-	Provider        string            `json:"provider" msgpack:"provider"`
-	Image           string            `json:"image,omitempty" msgpack:"image,omitempty"`
-	Command         []string          `json:"command,omitempty" msgpack:"command,omitempty"`
-	Workdir         string            `json:"workdir" msgpack:"workdir"`
-	Port            int               `json:"port" msgpack:"port"`
-	HealthPath      string            `json:"healthPath" msgpack:"healthPath"`
-	Env             map[string]string `json:"env,omitempty" msgpack:"env,omitempty"`
-	ProviderOptions any               `json:"providerOptions,omitempty" msgpack:"providerOptions,omitempty"`
+	Command []string `json:"command,omitempty" msgpack:"command,omitempty"`
+	Port    int      `json:"port" msgpack:"port"`
 }
 
 type Plan struct {

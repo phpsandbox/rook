@@ -11,9 +11,11 @@ func TestInboundMessageDecodePayloadFromMessagePackDecodedMap(t *testing.T) {
 		},
 		"plan": map[string]any{
 			"strategy": "laravel",
+			"build": map[string]any{
+				"image": "phpsandbox/php:latest",
+			},
 			"runtime": map[string]any{
-				"port":    8000,
-				"command": []any{"/usr/local/bin/okra-laravel-start"},
+				"port": 8000,
 			},
 		},
 		"bundle": map[string]any{
@@ -40,6 +42,12 @@ func TestInboundMessageDecodePayloadFromMessagePackDecodedMap(t *testing.T) {
 	}
 	if payload.Plan.Runtime.Port != 8000 {
 		t.Fatalf("runtime port = %d", payload.Plan.Runtime.Port)
+	}
+	if payload.Plan.Build.Image != "phpsandbox/php:latest" {
+		t.Fatalf("build image = %q", payload.Plan.Build.Image)
+	}
+	if len(payload.Plan.Runtime.Command) != 0 {
+		t.Fatalf("runtime command = %#v", payload.Plan.Runtime.Command)
 	}
 	if payload.Bundle == nil || string(payload.Bundle.Data) != "abc" {
 		t.Fatalf("bundle = %#v", payload.Bundle)

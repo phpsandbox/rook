@@ -6,8 +6,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+const sourceContextDir = "app"
 
 type Deployer struct {
 	docker DockerClient
@@ -16,7 +19,7 @@ type Deployer struct {
 
 type DockerClient interface {
 	Build(ctx context.Context, contextDir string, tag string, onOutput func(string)) error
-	RunBuildCommand(ctx context.Context, workspace string, command string, env map[string]string, onOutput func(string)) error
+	RunBuildCommand(ctx context.Context, workspace string, image string, command string, env map[string]string, onOutput func(string)) error
 	Run(ctx context.Context, opts RunOptions) (string, error)
 	Stop(ctx context.Context, containerID string) error
 	Remove(ctx context.Context, containerID string) error
@@ -30,6 +33,10 @@ func NewDeployer(docker DockerClient, state *StateStore) *Deployer {
 }
 
 func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(OutboundMessage)) error {
+	if strings.TrimSpace(payload.Plan.Build.Image) == "" {
+		return fmt.Errorf("deploy payload requires build.image")
+	}
+
 	commandID := payload.DeploymentID
 	emitLog := func(stream, content string) {
 		send(OutboundMessage{
@@ -51,13 +58,40 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	emitPhase("build.started", nil)
 
 	workDir := filepath.Join(os.TempDir(), "rook", payload.DeploymentID)
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		return fmt.Errorf("create work dir: %w", err)
+	if err := os.RemoveAll(workDir); err != nil {
+		return fmt.Errorf("clean work dir: %w", err)
 	}
-	defer os.RemoveAll(workDir)
+	sourceDir := filepath.Join(workDir, "source")
+	contextDir := filepath.Join(workDir, "context")
+	if keepBuildWorkDir() {
+		emitLog("build", "Keeping build workspace at "+workDir)
+	} else {
+		defer os.RemoveAll(workDir)
+	}
+
+	buildContextDir := sourceDir
+	if payload.Bundle != nil {
+		if payload.Bundle.Layout != DeployBundleLayoutDockerContextV1 {
+			return fmt.Errorf("unsupported deploy bundle layout %q", payload.Bundle.Layout)
+		}
+		emitLog("build", "Applying deployment bundle...")
+		if err := os.MkdirAll(contextDir, 0o755); err != nil {
+			return fmt.Errorf("create build context dir: %w", err)
+		}
+		if err := ApplyDeployBundle(contextDir, *payload.Bundle); err != nil {
+			return fmt.Errorf("apply deployment bundle: %w", err)
+		}
+		if exists(filepath.Join(contextDir, sourceContextDir)) {
+			return fmt.Errorf("deploy bundle uses reserved build context path %q", sourceContextDir)
+		}
+		sourceDir = filepath.Join(contextDir, sourceContextDir)
+		buildContextDir = contextDir
+	} else if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		return fmt.Errorf("create source dir: %w", err)
+	}
 
 	emitLog("build", "Cloning source...")
-	if err := d.cloneSource(ctx, payload.Source, workDir); err != nil {
+	if err := d.cloneSource(ctx, payload.Source, sourceDir); err != nil {
 		return fmt.Errorf("clone source: %w", err)
 	}
 
@@ -65,7 +99,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		emitLog("build", "Running build commands...")
 		for _, cmd := range payload.Plan.Build.Commands {
 			emitLog("build", "$ "+cmd)
-			if err := d.runBuildCommand(ctx, workDir, cmd, func(line string) {
+			if err := d.runBuildCommand(ctx, sourceDir, payload.Plan.Build.Image, cmd, func(line string) {
 				emitLog("build", line)
 			}, payload.Env); err != nil {
 				return fmt.Errorf("build command %q: %w", cmd, err)
@@ -73,16 +107,9 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		}
 	}
 
-	if payload.Bundle != nil {
-		emitLog("build", "Applying deployment bundle...")
-		if err := ApplyDeployBundle(workDir, *payload.Bundle); err != nil {
-			return fmt.Errorf("apply deployment bundle: %w", err)
-		}
-	}
-
 	imageTag := fmt.Sprintf("okra-%s:%s", payload.DeploymentID, time.Now().Format("20060102-150405"))
 	emitLog("build", "Building Docker image...")
-	if err := d.docker.Build(ctx, workDir, imageTag, func(line string) {
+	if err := d.docker.Build(ctx, buildContextDir, imageTag, func(line string) {
 		emitLog("build", line)
 	}); err != nil {
 		return fmt.Errorf("docker build: %w", err)
@@ -175,8 +202,8 @@ func (d *Deployer) cloneSource(ctx context.Context, source SourceRef, dest strin
 	return PrepareSource(ctx, source, dest)
 }
 
-func (d *Deployer) runBuildCommand(ctx context.Context, dir string, command string, onOutput func(string), env map[string]string) error {
-	return d.docker.RunBuildCommand(ctx, dir, command, env, onOutput)
+func (d *Deployer) runBuildCommand(ctx context.Context, dir string, image string, command string, onOutput func(string), env map[string]string) error {
+	return d.docker.RunBuildCommand(ctx, dir, image, command, env, onOutput)
 }
 
 func (d *Deployer) allocatePort() (int, error) {
@@ -199,4 +226,18 @@ func hostPortAvailable(port int) bool {
 	}
 	_ = listener.Close()
 	return true
+}
+
+func keepBuildWorkDir() bool {
+	switch os.Getenv("ROOK_KEEP_BUILD_WORKDIR") {
+	case "1", "true", "TRUE", "yes", "YES":
+		return true
+	default:
+		return false
+	}
+}
+
+func exists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
