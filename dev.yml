@@ -1,0 +1,70 @@
+name: rook
+
+projects:
+  - phpsandbox/okra
+
+env:
+  ROOK_CONFIG: .rook/rook.yaml
+  ROOK_STATE_DIR: .rook/state
+  ROOK_CONTROL_PLANE: wss://okra-edge.ciroue.test/_okra/agent/connect
+  ROOK_SERVER_ID: rook-local
+  ROOK_TOKEN: rook-local-token
+  ROOK_DOCKER_SMOKE_IMAGE: phpsandbox/php:latest
+
+steps:
+  - brew:
+      - go
+  - script:
+      desc: Check Docker is available
+      run: docker version >/dev/null
+  - command: setup-config
+
+commands:
+  setup-config:
+    desc: Write local Rook config from dev env
+    run: |
+      mkdir -p "$(dirname "$ROOK_CONFIG")" "$ROOK_STATE_DIR"
+      if [ "$ROOK_SERVER_ID" = "rook-local" ] || [ "$ROOK_TOKEN" = "rook-local-token" ]; then
+        echo "Using placeholder Rook credentials. Override ROOK_SERVER_ID and ROOK_TOKEN for an end-to-end local connection."
+      fi
+      cat > "$ROOK_CONFIG" <<YAML
+      server_id: "${ROOK_SERVER_ID}"
+      token: "${ROOK_TOKEN}"
+      control_plane: "${ROOK_CONTROL_PLANE}"
+      state_dir: "${ROOK_STATE_DIR}"
+      YAML
+  build:
+    desc: Build Rook locally
+    run: go build -trimpath -o bin/rook ./cmd/rook
+  build-linux:
+    desc: Build Linux release binaries locally
+    run: |
+      mkdir -p dist
+      for arch in amd64 arm64; do
+        CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags="-s -w -X main.version=dev" -o "dist/rook-linux-${arch}" ./cmd/rook
+      done
+  run:
+    desc: Run Rook with the local dev config
+    run: go run ./cmd/rook --config "$ROOK_CONFIG"
+  test:
+    desc: Run Rook tests
+    run: go test ./...
+  test-integration:
+    desc: Run Docker-backed Rook integration tests
+    run: ROOK_DOCKER_INTEGRATION=1 ROOK_DOCKER_SMOKE_IMAGE="$ROOK_DOCKER_SMOKE_IMAGE" go test ./internal/agent -run TestDockerComposeRuntimeSmoke -count=1 -v
+  coverage:
+    desc: Run Rook tests with coverage
+    run: go test -cover ./...
+  style:
+    desc: Format Go files
+    run: gofmt -w cmd internal
+  check-style:
+    desc: Check Go formatting
+    run: test -z "$(gofmt -l cmd internal)"
+  install-script-check:
+    desc: Check installer shell syntax
+    run: bash -n scripts/install.sh
+
+serve:
+  app:
+    run: go run ./cmd/rook --config "$ROOK_CONFIG"
