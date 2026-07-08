@@ -1,0 +1,10 @@
+root = "."
+tmp_dir = ".rook/tmp"
+
+[build]
+cmd = "go build -trimpath -o ./.rook/tmp/rook ./cmd/rook"
+entrypoint = ["./.rook/tmp/rook"]
+args_bin = ["--config", ".rook/rook.yaml"]
+include_ext = ["go", "yaml", "yml"]
+include_dir = ["cmd", "internal"]
+exclude_dir = [".git", ".rook", "bin", "dist"]
