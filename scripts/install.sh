@@ -21,6 +21,7 @@ Options:
   --control-plane URL  Control plane websocket URL (required for fresh install)
   --version VERSION    Install a specific version, for example v0.1.0 (default: latest)
   --uninstall          Remove Rook and its service
+  --purge              With --uninstall, also remove configuration, state, and the rook user
   -h, --help           Show this help
 
 Environment:
@@ -37,6 +38,7 @@ TOKEN=""
 CONTROL_PLANE=""
 VERSION="latest"
 UNINSTALL=false
+PURGE=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --control-plane) CONTROL_PLANE="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
     --uninstall) UNINSTALL=true; shift ;;
+    --purge) PURGE=true; shift ;;
     -h|--help) usage ;;
     *) err "unknown option: $1" ;;
   esac
@@ -104,19 +107,15 @@ asset_url() {
   fi
 }
 
-verify_checksum_if_available() {
+verify_checksum() {
   local binary_path="$1"
   local checksum_path="$2"
-
-  if [[ ! -f "$checksum_path" ]]; then
-    return
-  fi
   if command -v sha256sum >/dev/null 2>&1; then
     (cd "$(dirname "$binary_path")" && sha256sum -c "$(basename "$checksum_path")")
   elif command -v shasum >/dev/null 2>&1; then
     (cd "$(dirname "$binary_path")" && shasum -a 256 -c "$(basename "$checksum_path")")
   else
-    log "No sha256 checker found; skipping checksum verification"
+    err "neither sha256sum nor shasum is installed"
   fi
 }
 
@@ -147,8 +146,8 @@ download_binary() {
 
   log "Downloading ${asset} (${VERSION})"
   download "$(asset_url "$VERSION" "$asset")" "$binary_tmp"
-  download "$(asset_url "$VERSION" "${asset}.sha256")" "$checksum_tmp" || true
-  verify_checksum_if_available "$binary_tmp" "$checksum_tmp"
+  download "$(asset_url "$VERSION" "${asset}.sha256")" "$checksum_tmp"
+  verify_checksum "$binary_tmp" "$checksum_tmp"
 
   install -m 0755 "$binary_tmp" "${INSTALL_DIR}/${BINARY_NAME}"
   rm -rf "$tmpdir"
@@ -206,11 +205,23 @@ uninstall() {
   rm -f "${INSTALL_DIR}/${BINARY_NAME}"
   rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
   systemctl daemon-reload
-  log "Rook removed. Config and state were preserved at ${CONFIG_DIR} and ${STATE_DIR}."
+  if [[ "$PURGE" == "true" ]]; then
+    rm -rf "$CONFIG_DIR" "$STATE_DIR"
+    if id rook >/dev/null 2>&1; then
+      userdel rook
+    fi
+    log "Rook, its credentials, and local state were removed."
+  else
+    log "Rook removed. Config and state were preserved at ${CONFIG_DIR} and ${STATE_DIR}."
+  fi
 }
 
 main() {
   check_root
+
+  if [[ "$PURGE" == "true" && "$UNINSTALL" != "true" ]]; then
+    err "--purge requires --uninstall"
+  fi
 
   if [[ "$UNINSTALL" == "true" ]]; then
     uninstall

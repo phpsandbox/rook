@@ -24,6 +24,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Verify source
+        run: |
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+          bash -n scripts/install.sh
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
