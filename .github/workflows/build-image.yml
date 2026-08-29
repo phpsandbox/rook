@@ -7,12 +7,6 @@ on:
     paths:
       - docker/build/Dockerfile
   workflow_dispatch:
-    inputs:
-      visibility_only:
-        description: Only enforce package visibility without rebuilding
-        required: false
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -23,19 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        if: ${{ !inputs.visibility_only }}
       - uses: docker/setup-qemu-action@v3
-        if: ${{ !inputs.visibility_only }}
       - uses: docker/setup-buildx-action@v3
-        if: ${{ !inputs.visibility_only }}
       - uses: docker/login-action@v3
-        if: ${{ !inputs.visibility_only }}
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@v6
-        if: ${{ !inputs.visibility_only }}
         with:
           context: docker/build
           platforms: linux/amd64,linux/arm64
@@ -43,10 +32,3 @@ jobs:
           tags: |
             ghcr.io/phpsandbox/rook-build:latest
             ghcr.io/phpsandbox/rook-build:sha-${{ github.sha }}
-      - name: Ensure public package visibility
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >-
-          gh api --method PATCH
-          "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/rook-build"
-          --field visibility=public
