@@ -4,7 +4,7 @@ go 1.23.0
 
 require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	go.yaml.in/yaml/v3 v3.0.4
+	go.yaml.in/yaml/v3 v3.0.5
 	nhooyr.io/websocket v1.8.17
 )
 
