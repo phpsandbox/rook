@@ -40,6 +40,6 @@ jobs:
           asset="rook-${GOOS}-${GOARCH}"
           go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${asset}" ./cmd/rook
           (cd dist && sha256sum "${asset}" > "${asset}.sha256")
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
