@@ -9,10 +9,10 @@ func TestAgentPlaneURLUsesWebSocketScheme(t *testing.T) {
 		controlPlane string
 		expected     string
 	}{
-		"HTTP":  {controlPlane: "http://rook.ciroue.test/connect", expected: "ws://rook.ciroue.test/connect?channel=control&server_id=server-1"},
-		"HTTPS": {controlPlane: "https://rook.ciroue.com/connect", expected: "wss://rook.ciroue.com/connect?channel=control&server_id=server-1"},
-		"WS":    {controlPlane: "ws://rook.ciroue.test/connect", expected: "ws://rook.ciroue.test/connect?channel=control&server_id=server-1"},
-		"WSS":   {controlPlane: "wss://rook.ciroue.com/connect", expected: "wss://rook.ciroue.com/connect?channel=control&server_id=server-1"},
+		"HTTP":  {controlPlane: "http://rook.phpsandbox.test/connect", expected: "ws://rook.phpsandbox.test/connect?channel=control&server_id=server-1"},
+		"HTTPS": {controlPlane: "https://rook.phpsandbox.io/connect", expected: "wss://rook.phpsandbox.io/connect?channel=control&server_id=server-1"},
+		"WS":    {controlPlane: "ws://rook.phpsandbox.test/connect", expected: "ws://rook.phpsandbox.test/connect?channel=control&server_id=server-1"},
+		"WSS":   {controlPlane: "wss://rook.phpsandbox.io/connect", expected: "wss://rook.phpsandbox.io/connect?channel=control&server_id=server-1"},
 	}
 
 	for name, test := range tests {
