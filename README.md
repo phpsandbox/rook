@@ -18,7 +18,7 @@ Example config:
 ```yaml
 server_id: "srv_..."
 token: "..."
-control_plane: "https://rook.ciroue.test/connect"
+control_plane: "https://rook.phpsandbox.test/connect"
 state_dir: ".rook/state"
 ```
 
@@ -33,10 +33,10 @@ running Docker daemon plus either `curl` or `wget`.
 > a dedicated host that you trust PHPSandbox to manage.
 
 ```bash
-curl -fsSL https://install.phpsandbox.io/agent | sudo bash -s -- \
+curl -fsSL https://install.phpsandbox.io/rook | sudo bash -s -- \
   --server-id srv_... \
   --token ... \
-  --control-plane https://rook.ciroue.com/connect
+  --control-plane https://rook.phpsandbox.io/connect
 ```
 
 Rook converts HTTP and HTTPS control-plane URLs to their WebSocket equivalents when connecting.
@@ -47,7 +47,7 @@ The server token is a credential. Avoid saving the install command in shell
 history or CI logs. To remove Rook while retaining its configuration and state:
 
 ```bash
-curl -fsSL https://install.phpsandbox.io/agent | sudo bash -s -- --uninstall
+curl -fsSL https://install.phpsandbox.io/rook | sudo bash -s -- --uninstall
 ```
 
 Add `--purge` to also remove the stored token, deployment state, and system user.

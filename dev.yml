@@ -3,7 +3,7 @@ name: rook
 env:
   ROOK_CONFIG: .rook/rook.yaml
   ROOK_STATE_DIR: .rook/state
-  ROOK_CONTROL_PLANE: https://rook.ciroue.test/connect
+  ROOK_CONTROL_PLANE: https://rook.phpsandbox.test/connect
   ROOK_SERVER_ID: rook-local
   ROOK_TOKEN: rook-local-token
 
