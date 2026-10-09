@@ -359,9 +359,6 @@ func validateInboundRelayFrame(frame RelayFrame) error {
 	if frame.Protocol != RelayProtocol {
 		return fmt.Errorf("unsupported relay protocol %q", frame.Protocol)
 	}
-	if frame.StreamID == "" {
-		return fmt.Errorf("streamId is required")
-	}
 	if frame.Kind != RelayKindHTTP {
 		return fmt.Errorf("unsupported relay stream kind %q", frame.Kind)
 	}
