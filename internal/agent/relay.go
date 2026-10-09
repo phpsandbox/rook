@@ -93,11 +93,6 @@ func (m *RelayManager) handleOpen(ctx context.Context, frame RelayFrame) {
 }
 
 func (m *RelayManager) handleHTTPOpen(ctx context.Context, frame RelayFrame) {
-	if frame.DeploymentID == "" {
-		m.sendReset(ctx, frame.StreamID, frame.Kind, fmt.Errorf("deploymentId is required"))
-		return
-	}
-
 	var body io.Reader = http.NoBody
 	if relayFrameHasBody(frame) {
 		reader, writer := io.Pipe()
@@ -116,16 +111,12 @@ func (m *RelayManager) handleHTTPOpen(ctx context.Context, frame RelayFrame) {
 }
 
 func (m *RelayManager) handleWebSocketOpen(ctx context.Context, frame RelayFrame) {
-	if frame.DeploymentID == "" {
-		m.sendReset(ctx, frame.StreamID, frame.Kind, fmt.Errorf("deploymentId is required"))
-		return
-	}
 	if relayFrameHasBody(frame) {
 		m.sendReset(ctx, frame.StreamID, frame.Kind, fmt.Errorf("websocket upgrade must not include a request body"))
 		return
 	}
 
-	targetURL, err := m.proxy.WebSocketURL(frame.DeploymentID, nonEmptyPath(frame.Path))
+	targetURL, err := m.proxy.WebSocketURL(frame.DeploymentID, frame.Path)
 	if err != nil {
 		m.sendReset(ctx, frame.StreamID, frame.Kind, err)
 		return
@@ -204,9 +195,6 @@ func (m *RelayManager) handleEnd(frame RelayFrame) {
 
 func (m *RelayManager) handleReset(frame RelayFrame) {
 	message := frame.Error
-	if message == "" {
-		message = "stream reset"
-	}
 	if stream := m.removeHTTP(frame.StreamID); stream != nil {
 		_ = stream.writer.CloseWithError(fmt.Errorf("%s", message))
 		return
@@ -217,7 +205,7 @@ func (m *RelayManager) handleReset(frame RelayFrame) {
 func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, body io.Reader) {
 	defer m.removeHTTP(frame.StreamID)
 
-	resp, err := m.proxy.OpenHTTP(ctx, frame.DeploymentID, nonEmptyMethod(frame.Method), nonEmptyPath(frame.Path), frame.Headers, body)
+	resp, err := m.proxy.OpenHTTP(ctx, frame.DeploymentID, frame.Method, frame.Path, frame.Headers, body)
 	if err != nil {
 		m.sendReset(ctx, frame.StreamID, RelayKindHTTP, err)
 		return
@@ -365,20 +353,6 @@ func responseHeaderPairs(headers map[string][]string) []HeaderPair {
 		}
 	}
 	return pairs
-}
-
-func nonEmptyMethod(method string) string {
-	if method == "" {
-		return http.MethodGet
-	}
-	return method
-}
-
-func nonEmptyPath(path string) string {
-	if path == "" {
-		return "/"
-	}
-	return path
 }
 
 func validateInboundRelayFrame(frame RelayFrame) error {

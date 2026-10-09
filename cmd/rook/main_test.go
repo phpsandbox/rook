@@ -21,10 +21,11 @@ func TestAgentPlaneURLUsesWebSocketScheme(t *testing.T) {
 		controlPlane string
 		expected     string
 	}{
-		"HTTP":  {controlPlane: "http://rook.phpsandbox.test/connect", expected: "ws://rook.phpsandbox.test/connect?channel=control&server_id=server-1"},
-		"HTTPS": {controlPlane: "https://rook.phpsandbox.io/connect", expected: "wss://rook.phpsandbox.io/connect?channel=control&server_id=server-1"},
-		"WS":    {controlPlane: "ws://rook.phpsandbox.test/connect", expected: "ws://rook.phpsandbox.test/connect?channel=control&server_id=server-1"},
-		"WSS":   {controlPlane: "wss://rook.phpsandbox.io/connect", expected: "wss://rook.phpsandbox.io/connect?channel=control&server_id=server-1"},
+		"HTTP":              {controlPlane: "http://rook.phpsandbox.test/connect", expected: "ws://rook.phpsandbox.test/connect?channel=control&server_id=server-1"},
+		"HTTPS":             {controlPlane: "https://rook.phpsandbox.io/connect", expected: "wss://rook.phpsandbox.io/connect?channel=control&server_id=server-1"},
+		"WS":                {controlPlane: "ws://rook.phpsandbox.test/connect", expected: "ws://rook.phpsandbox.test/connect?channel=control&server_id=server-1"},
+		"Configured server": {controlPlane: "wss://rook.phpsandbox.io/connect?server_id=other", expected: "wss://rook.phpsandbox.io/connect?channel=control&server_id=server-1"},
+		"WSS":               {controlPlane: "wss://rook.phpsandbox.io/connect", expected: "wss://rook.phpsandbox.io/connect?channel=control&server_id=server-1"},
 	}
 
 	for name, test := range tests {

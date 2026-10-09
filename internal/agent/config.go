@@ -20,10 +20,6 @@ type Config struct {
 }
 
 func LoadConfig(path string) (Config, error) {
-	if path == "" {
-		path = DefaultConfigPath
-	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read agent config: %w", err)

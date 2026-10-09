@@ -135,9 +135,7 @@ func agentPlaneURL(rawURL string, serverID string, channel string) string {
 		parsed.Scheme = "wss"
 	}
 	query := parsed.Query()
-	if query.Get("server_id") == "" {
-		query.Set("server_id", serverID)
-	}
+	query.Set("server_id", serverID)
 	query.Set("channel", channel)
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
