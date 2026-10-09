@@ -6,7 +6,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -41,7 +40,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	if payload.Plan.Runtime.Port <= 0 {
 		return fmt.Errorf("deploy payload requires runtime.port")
 	}
-	if strings.TrimSpace(payload.Plan.Runtime.HealthPath) == "" {
+	if payload.Plan.Runtime.HealthPath == "" {
 		return fmt.Errorf("deploy payload requires runtime.healthPath")
 	}
 

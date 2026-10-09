@@ -36,25 +36,44 @@ func TestPrepareSourceChecksOutPinnedCommitInsteadOfBranchHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	runGit("commit", "-am", "second")
-	for _, scenario := range []struct{ name, ref, content string }{
-		{"pinned", revision, "first"}, {"branch", "main", "second"},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			dest := filepath.Join(t.TempDir(), "source")
-			if err := PrepareSource(context.Background(), SourceRef{GitURL: repo, Ref: scenario.ref}, dest); err != nil {
-				t.Fatal(err)
-			}
-			content, err := os.ReadFile(filepath.Join(dest, "version.txt"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(content) != scenario.content {
-				t.Fatalf("source content = %q, want %q", content, scenario.content)
-			}
-		})
+	dest := filepath.Join(t.TempDir(), "source")
+	if err := PrepareSource(context.Background(), SourceRef{GitURL: repo, Ref: revision}, dest); err != nil {
+		t.Fatal(err)
 	}
-	dest := filepath.Join(t.TempDir(), "missing")
+	content, err := os.ReadFile(filepath.Join(dest, "version.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "first" {
+		t.Fatalf("published branch head instead of pinned commit: %q", content)
+	}
+	for _, ref := range []string{"", "main", " " + revision} {
+		if err := PrepareSource(context.Background(), SourceRef{GitURL: repo, Ref: ref}, filepath.Join(t.TempDir(), "rejected")); err == nil {
+			t.Fatal("unpinned source accepted")
+		}
+	}
+	dest = filepath.Join(t.TempDir(), "missing")
 	if err := PrepareSource(context.Background(), SourceRef{GitURL: repo, Ref: strings.Repeat("a", 40)}, dest); err == nil {
 		t.Fatal("unavailable revision must fail instead of publishing branch head")
+	}
+}
+
+func TestGitAskpassPreservesCredentialsExactly(t *testing.T) {
+	env, cleanup, err := gitCredentialEnv(SourceRef{GitUsername: " user ", GitPassword: " password "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	path := strings.TrimPrefix(env[0], "GIT_ASKPASS=")
+	for prompt, want := range map[string]string{"Username": " user \n", "Password": " password \n"} {
+		cmd := exec.Command(path, prompt)
+		cmd.Env = append(os.Environ(), env...)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != want {
+			t.Fatal("Git credential was altered")
+		}
 	}
 }

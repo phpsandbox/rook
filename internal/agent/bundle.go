@@ -40,10 +40,7 @@ func ApplyDeployBundle(workspace string, bundle DeployBundle) error {
 }
 
 func verifyDeployBundleChecksum(bundle DeployBundle) error {
-	expected := strings.TrimSpace(bundle.SHA256)
-	if expected == "" {
-		return fmt.Errorf("deploy bundle checksum is required")
-	}
+	expected := bundle.SHA256
 	expected = strings.TrimPrefix(expected, "sha256:")
 	sum := sha256.Sum256(bundle.Data)
 	actual := hex.EncodeToString(sum[:])

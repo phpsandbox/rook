@@ -368,14 +368,14 @@ func responseHeaderPairs(headers map[string][]string) []HeaderPair {
 }
 
 func nonEmptyMethod(method string) string {
-	if strings.TrimSpace(method) == "" {
+	if method == "" {
 		return http.MethodGet
 	}
 	return method
 }
 
 func nonEmptyPath(path string) string {
-	if strings.TrimSpace(path) == "" {
+	if path == "" {
 		return "/"
 	}
 	return path
@@ -385,7 +385,7 @@ func validateInboundRelayFrame(frame RelayFrame) error {
 	if frame.Protocol != RelayProtocol {
 		return fmt.Errorf("unsupported relay protocol %q", frame.Protocol)
 	}
-	if strings.TrimSpace(frame.StreamID) == "" {
+	if frame.StreamID == "" {
 		return fmt.Errorf("streamId is required")
 	}
 	if frame.Kind != RelayKindHTTP {
@@ -394,13 +394,13 @@ func validateInboundRelayFrame(frame RelayFrame) error {
 
 	switch frame.Type {
 	case RelayFrameOpen:
-		if strings.TrimSpace(frame.DeploymentID) == "" {
+		if frame.DeploymentID == "" {
 			return fmt.Errorf("deploymentId is required")
 		}
-		if strings.TrimSpace(frame.Method) == "" {
+		if frame.Method == "" {
 			return fmt.Errorf("method is required")
 		}
-		if strings.TrimSpace(frame.Path) == "" {
+		if frame.Path == "" {
 			return fmt.Errorf("path is required")
 		}
 		if frame.HasBody == nil {
@@ -409,7 +409,7 @@ func validateInboundRelayFrame(frame RelayFrame) error {
 	case RelayFrameData:
 	case RelayFrameEnd:
 	case RelayFrameReset:
-		if strings.TrimSpace(frame.Error) == "" {
+		if frame.Error == "" {
 			return fmt.Errorf("reset error is required")
 		}
 	default:

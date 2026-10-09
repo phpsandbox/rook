@@ -12,11 +12,14 @@ import (
 )
 
 func PrepareSource(ctx context.Context, source SourceRef, workspace string) error {
-	if strings.TrimSpace(source.Path) != "" {
+	if source.Path != "" {
 		return copyDirectory(source.Path, workspace)
 	}
-	if strings.TrimSpace(source.GitURL) == "" {
+	if source.GitURL == "" {
 		return fmt.Errorf("source requires gitUrl or path")
+	}
+	if !commitRevisionPattern.MatchString(source.Ref) {
+		return fmt.Errorf("git source requires a pinned commit revision")
 	}
 	authEnv, cleanup, err := gitCredentialEnv(source)
 	if err != nil {
@@ -32,41 +35,29 @@ func PrepareSource(ctx context.Context, source SourceRef, workspace string) erro
 	if err != nil {
 		return fmt.Errorf("git clone failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	if isCommitRevision(source.Ref) {
-		checkout := exec.CommandContext(ctx, "git", "checkout", "--detach", source.Ref)
-		checkout.Dir = workspace
-		if output, err := checkout.CombinedOutput(); err != nil {
-			return fmt.Errorf("checkout pinned source revision: %w: %s", err, strings.TrimSpace(string(output)))
-		}
+	checkout := exec.CommandContext(ctx, "git", "checkout", "--detach", source.Ref)
+	checkout.Dir = workspace
+	if output, err := checkout.CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout pinned source revision: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
 
 var commitRevisionPattern = regexp.MustCompile(`(?i)^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
 
-func isCommitRevision(ref string) bool {
-	return commitRevisionPattern.MatchString(strings.TrimSpace(ref))
-}
-
 func gitCloneArgs(source SourceRef, workspace string) []string {
-	args := []string{"-c", "credential.helper=", "clone", "--depth=1"}
-	if isCommitRevision(source.Ref) {
-		args = []string{"-c", "credential.helper=", "clone", "--no-checkout"}
-	} else if strings.TrimSpace(source.Ref) != "" {
-		args = append(args, "--branch", source.Ref)
-	}
-	return append(args, source.GitURL, workspace)
+	return []string{"-c", "credential.helper=", "clone", "--no-checkout", source.GitURL, workspace}
 }
 
 func gitCredentialEnv(source SourceRef) ([]string, func(), error) {
-	password := strings.TrimSpace(source.GitPassword)
+	password := source.GitPassword
 	if password == "" {
-		password = strings.TrimSpace(source.GitToken)
+		password = source.GitToken
 	}
 	if password == "" {
 		return nil, func() {}, nil
 	}
-	username := strings.TrimSpace(source.GitUsername)
+	username := source.GitUsername
 	if username == "" {
 		username = "x-token"
 	}

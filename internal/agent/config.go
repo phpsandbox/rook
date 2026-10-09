@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -23,7 +22,7 @@ type Config struct {
 }
 
 func LoadConfig(path string) (Config, error) {
-	if strings.TrimSpace(path) == "" {
+	if path == "" {
 		path = DefaultConfigPath
 	}
 

@@ -146,7 +146,6 @@ func (d *DockerManager) WaitHealthy(ctx context.Context, containerID string, hos
 }
 
 func normalizeHealthPath(path string) string {
-	path = strings.TrimSpace(path)
 	if path == "" {
 		return "/"
 	}
