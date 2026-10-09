@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"github.com/phpsandbox/rook/internal/host"
 	"io"
 	"net"
 	"net/http"
@@ -43,8 +44,8 @@ func TestProxyOpenHTTPPreservesHeaderPairsAndBinaryBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state := NewStateStore(t.TempDir())
-	if err := state.Set("deployment-1", DeploymentState{ContainerID: "container-1", Port: port}); err != nil {
+	state := host.NewBindings(t.TempDir())
+	if err := state.Set("deployment-1", host.Binding{Port: port}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -96,8 +97,8 @@ func TestProxyOpenHTTPReturnsRedirectToBrowser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := NewStateStore(t.TempDir())
-	if err := state.Set("deployment-1", DeploymentState{ContainerID: "container-1", Port: port}); err != nil {
+	state := host.NewBindings(t.TempDir())
+	if err := state.Set("deployment-1", host.Binding{Port: port}); err != nil {
 		t.Fatal(err)
 	}
 	resp, err := NewProxy(state).OpenHTTP(context.Background(), "deployment-1", http.MethodPost, "/weather", nil, strings.NewReader("city=Berlin"))

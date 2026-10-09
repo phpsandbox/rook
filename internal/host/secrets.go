@@ -1,4 +1,4 @@
-package resources
+package host
 
 import (
 	"crypto/rand"
@@ -43,41 +43,72 @@ func loadSecrets(dir string, names []string) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := writePrivateFile(path, content); err != nil {
+		if err := writeFile(path, content, 0600); err != nil {
 			return nil, err
 		}
 	}
 	return secrets, nil
 }
 
-func resolveExecution(plan Plan, stateDir string) (Plan, error) {
-	content, err := json.Marshal(plan)
+func (e *Executor) ensureSecrets(scope string, names []string) error {
+	if err := validateScope(scope); err != nil {
+		return err
+	}
+	dir := filepath.Join(e.Directory, "secrets", scope)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	_, err := loadSecrets(dir, names)
+	return err
+}
+func validateScope(scope string) error {
+	if scope == "." || !filepath.IsLocal(scope) || filepath.Base(scope) != scope {
+		return fmt.Errorf("secret scope escapes local directory")
+	}
+	return nil
+}
+func (e *Executor) resolve(request Request) (Request, error) {
+	data := request.Data
+	request.Data = nil
+	content, err := json.Marshal(request)
 	if err != nil {
-		return plan, err
+		return request, err
 	}
 	var resolveError error
 	content = secretReferencePattern.ReplaceAllFunc(content, func(reference []byte) []byte {
 		parts := secretReferencePattern.FindSubmatch(reference)
 		scope, name := string(parts[1]), string(parts[2])
-		secrets, err := loadSecrets(filepath.Join(stateDir, "resources", scope), nil)
+		if err := validateScope(scope); err != nil {
+			resolveError = err
+			return reference
+		}
+		secrets, err := loadSecrets(filepath.Join(e.Directory, "secrets", scope), nil)
 		if err != nil {
 			resolveError = err
 			return reference
 		}
 		value, ok := secrets[name]
-		if !ok || value == "" {
-			resolveError = fmt.Errorf("required local secret is unavailable")
+		if !ok {
+			resolveError = fmt.Errorf("local secret is unavailable")
 			return reference
 		}
 		encoded, _ := json.Marshal(value)
 		return encoded[1 : len(encoded)-1]
 	})
 	if resolveError != nil {
-		return plan, resolveError
+		return request, resolveError
 	}
-	var resolved Plan
-	if err := json.Unmarshal(content, &resolved); err != nil {
-		return plan, err
+	var resolved Request
+	err = json.Unmarshal(content, &resolved)
+	if err != nil {
+		return request, err
+	}
+	if data != nil {
+		value, err := e.resolve(Request{Input: string(data)})
+		if err != nil {
+			return request, err
+		}
+		resolved.Data = []byte(value.Input)
 	}
 	return resolved, nil
 }

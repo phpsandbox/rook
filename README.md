@@ -2,12 +2,12 @@
 
 Rook is the PHPSandbox server agent.
 
-It is intentionally small and stable. The agent connects a registered server to PHPSandbox, runs deployments in local Docker containers, and routes deployment traffic to them.
+It is intentionally small and stable. The agent connects a registered server to PHPSandbox, executes host instructions, and routes deployment traffic to them.
 
 Rook stays focused on durable server-side primitives that can run for a long time with minimal updates.
 
-The resource execution boundary and first-release contract are documented in
-[Resource execution](docs/resource-execution.md).
+The host execution boundary and first-release contract are documented in
+[Host execution](docs/host-execution.md).
 
 ## Development
 
@@ -29,8 +29,9 @@ state_dir: ".rook/state"
 
 Rook supports Linux on AMD64 and ARM64. The host must use systemd and have a
 running Docker daemon, the Docker Compose plugin with `up --wait`,
-`--wait-timeout`, and `down --remove-orphans`, plus either `curl` or `wget`.
-Installation and agent startup verify these prerequisites before connecting.
+`--wait-timeout`, and `down --remove-orphans`, plus Git and curl.
+Installation checks these publishing prerequisites. Okra checks them again before
+publishing; the generic agent connection does not depend on Docker availability.
 
 > [!WARNING]
 > Rook belongs to the Docker group and executes deployment instructions received

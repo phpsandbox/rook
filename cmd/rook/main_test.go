@@ -39,22 +39,21 @@ func TestAgentPlaneURLUsesWebSocketScheme(t *testing.T) {
 	}
 }
 
-func TestUnsupportedComposeNeverConnectsOrAdvertisesCapability(t *testing.T) {
+func TestCorruptOperationStateNeverConnects(t *testing.T) {
 	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests.Add(1); w.WriteHeader(503) }))
 	defer server.Close()
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "docker"), []byte("#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nexit 1\n"), 0o700); err != nil {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "operations"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(filepath.Join(dir, "operations", "invalid.json"), []byte("broken"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "Compose plugin") || requests.Load() != 0 {
-		t.Fatalf("unsupported host connected or passed startup: %v, requests=%d", err, requests.Load())
+	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir})
+	if err == nil || !strings.Contains(err.Error(), "recover operations") || requests.Load() != 0 {
+		t.Fatalf("corrupt host connected: %v, requests=%d", err, requests.Load())
 	}
 }

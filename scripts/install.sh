@@ -75,6 +75,8 @@ check_root() {
 }
 
 check_docker() {
+  command -v git >/dev/null 2>&1 || err "git is required for publishing"
+  command -v curl >/dev/null 2>&1 || err "curl is required for publishing health checks"
   if ! command -v docker >/dev/null 2>&1; then
     err "docker is not installed"
   fi

@@ -3,16 +3,17 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/phpsandbox/rook/internal/host"
 	"io"
 	"net/http"
 	"strings"
 )
 
 type Proxy struct {
-	state *StateStore
+	state *host.Bindings
 }
 
-func NewProxy(state *StateStore) *Proxy {
+func NewProxy(state *host.Bindings) *Proxy {
 	return &Proxy{state: state}
 }
 

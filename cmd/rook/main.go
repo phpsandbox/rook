@@ -2,15 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/phpsandbox/rook/internal/agent"
-	"github.com/phpsandbox/rook/internal/resources"
+	"github.com/phpsandbox/rook/internal/host"
 )
 
 var version = "dev"
@@ -41,21 +43,14 @@ func main() {
 }
 
 func run(ctx context.Context, cfg agent.Config) error {
-	docker := agent.NewDockerManager()
-	if err := docker.Available(); err != nil {
-		return fmt.Errorf("prerequisite check failed: %w", err)
-	}
-
-	executor := &resources.Executor{DockerBin: "docker", StateDir: cfg.StateDir}
-	if err := executor.CheckPrerequisites(ctx); err != nil {
-		return fmt.Errorf("resource prerequisite check failed: %w", err)
-	}
-	state := agent.NewStateStore(cfg.StateDir)
+	state := host.NewBindings(cfg.StateDir)
 	if err := state.Load(); err != nil {
-		return fmt.Errorf("load state: %w", err)
+		return fmt.Errorf("load bindings: %w", err)
 	}
-
-	deployer := agent.NewDeployer(docker, state, executor)
+	executor := &host.Executor{Directory: cfg.StateDir, Bindings: state}
+	if err := executor.Recover(); err != nil {
+		return fmt.Errorf("recover operations: %w", err)
+	}
 	proxy := agent.NewProxy(state)
 	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token)
 	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token)
@@ -73,7 +68,7 @@ func run(ctx context.Context, cfg agent.Config) error {
 	}
 	defer dataWS.Close()
 
-	if err := sendHello(ctx, controlWS, cfg.ServerID, state.DeploymentIDs()); err != nil {
+	if err := sendHello(ctx, controlWS, cfg.ServerID, state.IDs()); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}
 
@@ -91,11 +86,11 @@ func run(ctx context.Context, cfg agent.Config) error {
 			if err := controlWS.ConnectWithRetry(ctx); err != nil {
 				return err
 			}
-			_ = sendHello(ctx, controlWS, cfg.ServerID, state.DeploymentIDs())
+			_ = sendHello(ctx, controlWS, cfg.ServerID, state.IDs())
 			continue
 		}
 
-		go handleCommand(ctx, msg, controlWS, deployer, proxy)
+		go handleCommand(ctx, msg, controlWS, executor)
 	}
 }
 
@@ -104,7 +99,7 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 		Type:         "hello",
 		ServerID:     serverID,
 		Version:      version,
-		Capabilities: []string{resources.ExecutionCapability},
+		Capabilities: []string{host.Capability},
 		Deployments:  deployments,
 	})
 }
@@ -148,63 +143,35 @@ func agentPlaneURL(rawURL string, serverID string, channel string) string {
 	return parsed.String()
 }
 
-func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSClient, deployer *agent.Deployer, proxy *agent.Proxy) {
+func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSClient, executor *host.Executor) {
 	send := func(out agent.OutboundMessage) {
 		out.CommandID = msg.CommandID
-		_ = ws.Send(ctx, out)
+		deliveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		_ = ws.Send(deliveryCtx, out)
 	}
-
+	request, err := msg.DecodeHostRequest()
+	if err != nil {
+		send(agent.OutboundMessage{Type: "result", Error: err.Error()})
+		return
+	}
+	var result host.Result
 	switch msg.Type {
-	case "deploy":
-		payload, err := msg.DecodeDeployPayload()
-		if err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		if err := deployer.Deploy(ctx, payload, send); err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		send(agent.OutboundMessage{Type: "result", Success: true})
-
-	case "stop":
-		payload, err := msg.DecodeStopPayload()
-		if err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		if err := deployer.Stop(ctx, payload.DeploymentID); err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		send(agent.OutboundMessage{Type: "result", Success: true})
-
-	case "delete":
-		payload, err := msg.DecodeDeletePayload()
-		if err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		if err := deployer.Delete(ctx, payload); err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		send(agent.OutboundMessage{Type: "result", Success: true})
-
-	case "logs.tail":
-		payload, err := msg.DecodeLogsTailPayload()
-		if err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		content, err := deployer.TailLogs(ctx, payload.DeploymentID, payload.Lines)
-		if err != nil {
-			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
-			return
-		}
-		send(agent.OutboundMessage{Type: "result", Success: true, Content: content})
-
+	case "host":
+		result, err = executor.Execute(ctx, request, func(output string) { send(agent.OutboundMessage{Type: "log", Stream: "host", Content: output}) })
+	case "host.status":
+		result, err = executor.Status(request.ID)
 	default:
-		send(agent.OutboundMessage{Type: "result", Success: false, Error: fmt.Sprintf("unsupported command %q", msg.Type)})
+		err = fmt.Errorf("unsupported command %q", msg.Type)
 	}
+	if err != nil {
+		send(agent.OutboundMessage{Type: "result", Error: err.Error()})
+		return
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		send(agent.OutboundMessage{Type: "result", Error: err.Error()})
+		return
+	}
+	send(agent.OutboundMessage{Type: "result", Success: result.Status == "completed", Error: result.Error, Result: data})
 }

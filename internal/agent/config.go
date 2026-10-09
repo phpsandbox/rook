@@ -10,8 +10,6 @@ import (
 const (
 	DefaultConfigPath = "/etc/rook/rook.yaml"
 	DefaultStateDir   = "/var/lib/rook/state"
-	PortRangeStart    = 10000
-	PortRangeEnd      = 32767
 )
 
 type Config struct {

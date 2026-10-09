@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"github.com/phpsandbox/rook/internal/host"
 	"io"
 	"net"
 	"net/http"
@@ -36,8 +37,8 @@ func TestRelayManagerStreamsHTTPRequestAndResponseBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state := NewStateStore(t.TempDir())
-	if err := state.Set("deployment-1", DeploymentState{ContainerID: "container-1", Port: port}); err != nil {
+	state := host.NewBindings(t.TempDir())
+	if err := state.Set("deployment-1", host.Binding{Port: port}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -116,8 +117,8 @@ func TestRelayManagerProxiesGETWithoutRequestBodyStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state := NewStateStore(t.TempDir())
-	if err := state.Set("deployment-1", DeploymentState{ContainerID: "container-1", Port: port}); err != nil {
+	state := host.NewBindings(t.TempDir())
+	if err := state.Set("deployment-1", host.Binding{Port: port}); err != nil {
 		t.Fatal(err)
 	}
 
