@@ -179,7 +179,7 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}
-		if err := deployer.Delete(ctx, payload.DeploymentID); err != nil {
+		if err := deployer.Delete(ctx, payload); err != nil {
 			send(agent.OutboundMessage{Type: "result", Success: false, Error: err.Error()})
 			return
 		}

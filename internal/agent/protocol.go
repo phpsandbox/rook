@@ -128,7 +128,9 @@ type StopPayload struct {
 }
 
 type DeletePayload struct {
-	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
+	ResourceKey     string `json:"resourceKey,omitempty" msgpack:"resourceKey,omitempty"`
+	DeleteResources bool   `json:"deleteResources,omitempty" msgpack:"deleteResources,omitempty"`
+	DeploymentID    string `json:"deploymentId" msgpack:"deploymentId"`
 }
 
 type LogsTailPayload struct {

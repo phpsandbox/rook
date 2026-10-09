@@ -9,11 +9,13 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type DockerManager struct {
-	bin string
+	resourcesMu sync.Mutex
+	bin         string
 }
 
 func NewDockerManager() *DockerManager {
@@ -46,13 +48,23 @@ func (d *DockerManager) Run(ctx context.Context, opts RunOptions) (string, error
 		"--name", opts.Name,
 		"-p", fmt.Sprintf("127.0.0.1:%d:%d", opts.HostPort, opts.ContainerPort),
 	}
+	if opts.Network != "" {
+		args = append(args, "--network", opts.Network)
+	}
+	for volume, target := range opts.Mounts {
+		args = append(args, "--mount", "type=volume,source="+volume+",target="+target)
+	}
+	commandEnv := os.Environ()
 	for k, v := range opts.Env {
-		args = append(args, "-e", k+"="+v)
+		args = append(args, "-e", k)
+		commandEnv = append(commandEnv, k+"="+v)
 	}
 	args = append(args, opts.Image)
 	args = append(args, opts.Command...)
 
-	out, err := exec.CommandContext(ctx, d.bin, args...).CombinedOutput()
+	cmd := exec.CommandContext(ctx, d.bin, args...)
+	cmd.Env = commandEnv
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("docker run: %w: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -151,6 +163,8 @@ type RunOptions struct {
 	HostPort      int
 	ContainerPort int
 	Env           map[string]string
+	Network       string
+	Mounts        map[string]string
 }
 
 func streamCommand(cmd *exec.Cmd, onOutput func(string)) error {

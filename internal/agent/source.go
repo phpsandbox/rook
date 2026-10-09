@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -31,12 +32,27 @@ func PrepareSource(ctx context.Context, source SourceRef, workspace string) erro
 	if err != nil {
 		return fmt.Errorf("git clone failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
+	if isCommitRevision(source.Ref) {
+		checkout := exec.CommandContext(ctx, "git", "checkout", "--detach", source.Ref)
+		checkout.Dir = workspace
+		if output, err := checkout.CombinedOutput(); err != nil {
+			return fmt.Errorf("checkout pinned source revision: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
 	return nil
+}
+
+var commitRevisionPattern = regexp.MustCompile(`(?i)^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
+
+func isCommitRevision(ref string) bool {
+	return commitRevisionPattern.MatchString(strings.TrimSpace(ref))
 }
 
 func gitCloneArgs(source SourceRef, workspace string) []string {
 	args := []string{"-c", "credential.helper=", "clone", "--depth=1"}
-	if strings.TrimSpace(source.Ref) != "" {
+	if isCommitRevision(source.Ref) {
+		args = []string{"-c", "credential.helper=", "clone", "--no-checkout"}
+	} else if strings.TrimSpace(source.Ref) != "" {
 		args = append(args, "--branch", source.Ref)
 	}
 	return append(args, source.GitURL, workspace)

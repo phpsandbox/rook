@@ -9,6 +9,7 @@ import (
 )
 
 type DeploymentState struct {
+	ResourceKey string `json:"resourceKey,omitempty"`
 	ContainerID string `json:"containerId"`
 	Port        int    `json:"port"`
 	ImageRef    string `json:"imageRef"`

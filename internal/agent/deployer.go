@@ -19,6 +19,8 @@ type Deployer struct {
 }
 
 type DockerClient interface {
+	PrepareResources(ctx context.Context, plan Plan, stateDir string) (ResourceRuntime, error)
+	DeleteResources(ctx context.Context, key, stateDir string) error
 	Build(ctx context.Context, contextDir string, tag string, env map[string]string, onOutput func(string)) error
 	Run(ctx context.Context, opts RunOptions) (string, error)
 	Stop(ctx context.Context, containerID string) error
@@ -41,6 +43,10 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	}
 	if strings.TrimSpace(payload.Plan.Runtime.HealthPath) == "" {
 		return fmt.Errorf("deploy payload requires runtime.healthPath")
+	}
+
+	if err := validateResources(payload.Plan); err != nil {
+		return err
 	}
 
 	commandID := payload.DeploymentID
@@ -120,6 +126,12 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	containerName := fmt.Sprintf("rook-%s-%s", payload.DeploymentID, time.Now().UTC().Format("20060102-150405"))
 	existing, hasExisting := d.state.Get(payload.DeploymentID)
 
+	emitLog("deploy", "Preparing persistent resources...")
+	resources, err := d.docker.PrepareResources(ctx, payload.Plan, d.state.dir)
+	if err != nil {
+		return fmt.Errorf("prepare resources: %w", err)
+	}
+
 	emitLog("deploy", "Starting container...")
 	containerID, err := d.docker.Run(ctx, RunOptions{
 		Name:          containerName,
@@ -127,7 +139,9 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		Command:       payload.Plan.Runtime.Command,
 		HostPort:      port,
 		ContainerPort: payload.Plan.Runtime.Port,
-		Env:           payload.Env,
+		Env:           mergeResourceEnvironment(payload.Env, resources.Env),
+		Network:       resources.Network,
+		Mounts:        resources.Mounts,
 	})
 	if err != nil {
 		return fmt.Errorf("start container: %w", err)
@@ -141,6 +155,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 
 	routeKey := fmt.Sprintf("deploy--%s", payload.DeploymentID)
 	if err := d.state.Set(payload.DeploymentID, DeploymentState{
+		ResourceKey: payload.Plan.ResourceKey,
 		ContainerID: containerID,
 		Port:        port,
 		ImageRef:    imageTag,
@@ -172,16 +187,33 @@ func (d *Deployer) Stop(ctx context.Context, deploymentID string) error {
 	return d.state.Remove(deploymentID)
 }
 
-func (d *Deployer) Delete(ctx context.Context, deploymentID string) error {
-	state, ok := d.state.Get(deploymentID)
-	if !ok {
-		return fmt.Errorf("deployment %s not found", deploymentID)
+func (d *Deployer) Delete(ctx context.Context, payload DeletePayload) error {
+	state, exists := d.state.Get(payload.DeploymentID)
+	key := payload.ResourceKey
+	if exists {
+		if key != "" && state.ResourceKey != "" && key != state.ResourceKey {
+			return fmt.Errorf("resource identity differs from deployment")
+		}
+		if state.ResourceKey != "" {
+			key = state.ResourceKey
+		}
+		present, err := d.docker.Inspect(ctx, state.ContainerID)
+		if err != nil {
+			return err
+		}
+		if present {
+			_ = d.docker.Stop(ctx, state.ContainerID)
+			if err := d.docker.Remove(ctx, state.ContainerID); err != nil {
+				return err
+			}
+		}
 	}
-	_ = d.docker.Stop(ctx, state.ContainerID)
-	if err := d.docker.Remove(ctx, state.ContainerID); err != nil {
-		return err
+	if payload.DeleteResources {
+		if err := d.docker.DeleteResources(ctx, key, d.state.dir); err != nil {
+			return err
+		}
 	}
-	return d.state.Remove(deploymentID)
+	return d.state.Remove(payload.DeploymentID)
 }
 
 func (d *Deployer) TailLogs(ctx context.Context, deploymentID string, lines int) (string, error) {

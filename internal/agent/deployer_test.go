@@ -21,6 +21,15 @@ type fakeDockerClient struct {
 	waitHealthyFn       func(containerID string) error
 }
 
+func (f *fakeDockerClient) PrepareResources(_ context.Context, _ Plan, _ string) (ResourceRuntime, error) {
+	return ResourceRuntime{}, nil
+}
+
+func (f *fakeDockerClient) DeleteResources(_ context.Context, key, _ string) error {
+	f.events = append(f.events, "delete-resources:"+key)
+	return nil
+}
+
 func (f *fakeDockerClient) Build(_ context.Context, contextDir string, tag string, env map[string]string, _ func(string)) error {
 	f.buildContext = contextDir
 	f.buildEnv = env
@@ -281,5 +290,33 @@ func assertFileContent(t *testing.T, path string, expected string) {
 	}
 	if string(content) != expected {
 		t.Fatalf("%s = %q, want %q", path, content, expected)
+	}
+}
+
+func TestUnpublishRetainsResourcesUnlessDeletionWasExplicit(t *testing.T) {
+	for _, deleting := range []bool{false, true} {
+		state := NewStateStore(t.TempDir())
+		if err := state.Set("deployment", DeploymentState{ContainerID: "container", ResourceKey: "project"}); err != nil {
+			t.Fatal(err)
+		}
+		docker := &fakeDockerClient{}
+		deployer := NewDeployer(docker, state)
+		if err := deployer.Delete(context.Background(), DeletePayload{DeploymentID: "deployment", DeleteResources: deleting}); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(docker.events, "delete-resources:project") != deleting {
+			t.Fatal("unpublish did not respect explicit resource deletion")
+		}
+	}
+}
+
+func TestFailedFirstReleaseCanCleanUpResourcesWithoutAContainer(t *testing.T) {
+	docker := &fakeDockerClient{}
+	deployer := NewDeployer(docker, NewStateStore(t.TempDir()))
+	if err := deployer.Delete(context.Background(), DeletePayload{DeploymentID: "failed", ResourceKey: "project", DeleteResources: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(docker.events, "delete-resources:project") {
+		t.Fatal("failed first release cannot clean its resources")
 	}
 }

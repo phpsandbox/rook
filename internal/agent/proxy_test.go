@@ -77,3 +77,38 @@ func TestProxyOpenHTTPPreservesHeaderPairsAndBinaryBody(t *testing.T) {
 		t.Fatalf("response body = %#v", body)
 	}
 }
+
+func TestProxyOpenHTTPReturnsRedirectToBrowser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/weather" {
+			t.Fatalf("proxy followed redirect to %s", r.URL.Path)
+		}
+		w.Header().Add("Set-Cookie", "session=updated; Path=/; HttpOnly")
+		http.Redirect(w, r, "/result", http.StatusSeeOther)
+	}))
+	defer server.Close()
+
+	_, portString, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := NewStateStore(t.TempDir())
+	if err := state.Set("deployment-1", DeploymentState{ContainerID: "container-1", Port: port}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := NewProxy(state).OpenHTTP(context.Background(), "deployment-1", http.MethodPost, "/weather", nil, strings.NewReader("city=Berlin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/result" {
+		t.Fatalf("redirect = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp.Header.Get("Set-Cookie") != "session=updated; Path=/; HttpOnly" {
+		t.Fatal("redirect session cookie was lost")
+	}
+}
