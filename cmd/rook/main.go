@@ -96,10 +96,11 @@ func run(ctx context.Context, cfg agent.Config) error {
 
 func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deployments []string) error {
 	return ws.Send(ctx, agent.OutboundMessage{
-		Type:        "hello",
-		ServerID:    serverID,
-		Version:     version,
-		Deployments: deployments,
+		Type:         "hello",
+		ServerID:     serverID,
+		Version:      version,
+		Capabilities: []string{agent.ResourceExecutionCapability},
+		Deployments:  deployments,
 	})
 }
 

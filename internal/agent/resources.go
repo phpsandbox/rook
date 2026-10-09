@@ -9,178 +9,250 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"strings"
 )
 
+const ResourceExecutionCapability = "resource-execution.v1"
+
 var resourceKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+var secretNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]{0,63}$`)
+var secretReferencePattern = regexp.MustCompile(`\{\{secret:([a-z0-9-]+):([a-zA-Z0-9]+)\}\}`)
 
-var serviceIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
-
-func resourceProject(key string) string {
-	if serviceIDPattern.MatchString(key) {
-		return "rook-service-" + key
+func resourceKey(plan *ResourceExecution) string {
+	if plan == nil {
+		return ""
 	}
-	return "rook-resources-" + key
+	return plan.Key
 }
 
-func databaseServiceName(key string) string {
-	if serviceIDPattern.MatchString(key) {
-		return "mysql"
+func validateResourceExecution(plan *ResourceExecution) error {
+	if plan == nil {
+		return nil
 	}
-	return "database"
-}
-
-type ResourceRuntime struct {
-	Network string
-	Mounts  map[string]string
-	Env     map[string]string
-}
-
-type resourceCredentials struct {
-	DatabasePassword string `json:"databasePassword"`
-	RootPassword     string `json:"rootPassword"`
-	CachePassword    string `json:"cachePassword"`
-}
-
-type composeDocument struct {
-	Services map[string]composeService `json:"services"`
-	Networks map[string]composeNetwork `json:"networks"`
-	Volumes  map[string]composeVolume  `json:"volumes"`
-}
-
-type composeService struct {
-	Image       string             `json:"image"`
-	Restart     string             `json:"restart"`
-	Environment map[string]string  `json:"environment,omitempty"`
-	Command     []string           `json:"command,omitempty"`
-	Volumes     []string           `json:"volumes"`
-	Networks    []string           `json:"networks"`
-	Healthcheck composeHealthcheck `json:"healthcheck"`
-}
-
-type composeNetwork struct {
-	Name string `json:"name"`
-}
-type composeVolume struct {
-	Name string `json:"name"`
-}
-type composeHealthcheck struct {
-	Test     []string `json:"test"`
-	Interval string   `json:"interval"`
-	Timeout  string   `json:"timeout"`
-	Retries  int      `json:"retries"`
-}
-
-func validateResources(plan Plan) error {
-	managed := false
-	for kind, selection := range plan.Resources {
-		switch kind {
-		case "database", "cache", "storage", "worker", "scheduler":
-		default:
-			return fmt.Errorf("unsupported SSH resource %q", kind)
+	if !resourceKeyPattern.MatchString(plan.Key) || !strings.HasPrefix(plan.Project, "rook-") || !strings.HasSuffix(plan.Project, "-"+plan.Key) || !resourceKeyPattern.MatchString(plan.Project) {
+		return fmt.Errorf("invalid resource identity")
+	}
+	for key, project := range plan.Dependencies {
+		if key == plan.Key || !resourceKeyPattern.MatchString(key) || !strings.HasPrefix(project, "rook-") || !strings.HasSuffix(project, "-"+key) || !resourceKeyPattern.MatchString(project) {
+			return fmt.Errorf("invalid resource dependency")
 		}
-		switch selection.Mode {
-		case "none", "external":
-		case "reuse":
-			managed = true
-			if kind != "database" || !resourceKeyPattern.MatchString(plan.DatabaseServiceKey) || (selection.Type != "" && selection.Type != "mysql") || (selection.Version != "" && selection.Version != "8.4") {
-				return fmt.Errorf("database reuse requires a valid service key")
+	}
+	for _, name := range plan.Secrets {
+		if !secretNamePattern.MatchString(name) {
+			return fmt.Errorf("invalid secret name")
+		}
+	}
+	var doc ComposeDocument
+	if err := json.Unmarshal(plan.Compose, &doc); err != nil {
+		return fmt.Errorf("invalid Compose document: %w", err)
+	}
+	for _, network := range doc.Networks {
+		if network.Name != plan.Project {
+			return fmt.Errorf("network is outside the resource scope")
+		}
+	}
+	if plan.Runtime.Network != plan.Project {
+		return fmt.Errorf("runtime network is outside the resource scope")
+	}
+	for _, volume := range doc.Volumes {
+		if !strings.HasPrefix(volume.Name, plan.Project+"-") || !resourceKeyPattern.MatchString(volume.Name) {
+			return fmt.Errorf("volume is outside the resource scope")
+		}
+	}
+	for volume, target := range plan.Runtime.Mounts {
+		if !strings.HasPrefix(volume, plan.Project+"-") || !resourceKeyPattern.MatchString(volume) || !filepath.IsAbs(target) || filepath.Clean(target) != target {
+			return fmt.Errorf("invalid resource mount")
+		}
+	}
+	for _, operations := range [][]ResourceOperation{plan.Prepare, plan.Cleanup} {
+		for _, op := range operations {
+			project := plan.Project
+			if op.Scope != plan.Key {
+				var ok bool
+				project, ok = plan.Dependencies[op.Scope]
+				if !ok {
+					return fmt.Errorf("operation references an undeclared resource")
+				}
 			}
-		case "create":
-			managed = true
-			switch kind {
-			case "database":
-				if (selection.Type != "" && selection.Type != "mysql") || (selection.Version != "" && selection.Version != "8.4") {
-					return fmt.Errorf("SSH database requires MySQL 8.4")
+			if !strings.HasPrefix(op.Container, project+"-") || !resourceKeyPattern.MatchString(op.Container) {
+				return fmt.Errorf("container is outside the resource scope")
+			}
+			switch op.Action {
+			case "exec":
+				if len(op.Command) == 0 {
+					return fmt.Errorf("container operation requires a command")
 				}
-			case "cache":
-				if (selection.Type != "" && selection.Type != "redis") || (selection.Version != "" && selection.Version != "7") {
-					return fmt.Errorf("SSH cache requires Redis 7")
-				}
-			case "storage":
-				if (selection.Type != "" && selection.Type != "local") || selection.Version != "" {
-					return fmt.Errorf("SSH storage requires local persistent files")
+			case "connect", "disconnect":
+				if op.Network != plan.Project {
+					return fmt.Errorf("operation network is outside the resource scope")
 				}
 			default:
-				return fmt.Errorf("SSH cannot create %s resources", kind)
+				return fmt.Errorf("unsupported resource operation %q", op.Action)
 			}
-		default:
-			return fmt.Errorf("unsupported SSH resource mode %q", selection.Mode)
 		}
-	}
-	if managed && !resourceKeyPattern.MatchString(plan.ResourceKey) {
-		return fmt.Errorf("managed resources require a valid project resource key")
 	}
 	return nil
 }
 
-func hasManagedResource(plan Plan, kind string) bool {
-	return plan.Resources[kind].Mode == "create" || (kind == "database" && plan.Resources[kind].Mode == "reuse" && plan.DatabaseServiceKey == plan.ResourceKey)
+func loadSecrets(dir string, names []string) (map[string]string, error) {
+	path := filepath.Join(dir, "credentials.json")
+	secrets := map[string]string{}
+	content, err := os.ReadFile(path)
+	if err == nil {
+		if err := json.Unmarshal(content, &secrets); err != nil {
+			return nil, err
+		}
+		if secrets == nil {
+			return nil, fmt.Errorf("invalid local secret store")
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	changed := false
+	for _, name := range names {
+		if secrets[name] != "" {
+			continue
+		}
+		value := make([]byte, 32)
+		if _, err := rand.Read(value); err != nil {
+			return nil, err
+		}
+		secrets[name] = hex.EncodeToString(value)
+		changed = true
+	}
+	if changed {
+		content, err := json.Marshal(secrets)
+		if err != nil {
+			return nil, err
+		}
+		// Atomic replacement keeps the previous credential file intact after an interrupted write.
+		temp, err := os.CreateTemp(dir, "credentials-*")
+		if err != nil {
+			return nil, err
+		}
+		defer os.Remove(temp.Name())
+		if _, err := temp.Write(content); err != nil {
+			temp.Close()
+			return nil, err
+		}
+		if err := temp.Close(); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(temp.Name(), path); err != nil {
+			return nil, err
+		}
+	}
+	return secrets, nil
+}
+
+func resolveExecution(plan ResourceExecution, stateDir string) (ResourceExecution, error) {
+	content, err := json.Marshal(plan)
+	if err != nil {
+		return plan, err
+	}
+	var resolveError error
+	content = secretReferencePattern.ReplaceAllFunc(content, func(reference []byte) []byte {
+		parts := secretReferencePattern.FindSubmatch(reference)
+		scope, name := string(parts[1]), string(parts[2])
+		if scope != plan.Key {
+			if _, ok := plan.Dependencies[scope]; !ok {
+				resolveError = fmt.Errorf("secret references an undeclared resource")
+				return reference
+			}
+		}
+		secrets, err := loadSecrets(filepath.Join(stateDir, "resources", scope), nil)
+		if err != nil {
+			resolveError = err
+			return reference
+		}
+		value, ok := secrets[name]
+		if !ok || value == "" {
+			resolveError = fmt.Errorf("required local secret is unavailable")
+			return reference
+		}
+		encoded, _ := json.Marshal(value)
+		return encoded[1 : len(encoded)-1]
+	})
+	if resolveError != nil {
+		return plan, resolveError
+	}
+	var resolved ResourceExecution
+	if err := json.Unmarshal(content, &resolved); err != nil {
+		return plan, err
+	}
+	return resolved, nil
 }
 
 func (d *DockerManager) PrepareResources(ctx context.Context, plan Plan, stateDir string) (ResourceRuntime, error) {
-	d.resourcesMu.Lock()
-	defer d.resourcesMu.Unlock()
 	runtime := ResourceRuntime{Env: map[string]string{}, Mounts: map[string]string{}}
-	if err := validateResources(plan); err != nil {
-		return runtime, err
-	}
-	if !hasManagedResource(plan, "database") && !hasManagedResource(plan, "cache") && !hasManagedResource(plan, "storage") && plan.Resources["database"].Mode != "reuse" {
+	if plan.Execution == nil {
 		return runtime, nil
 	}
-	project := resourceProject(plan.ResourceKey)
-	dir := filepath.Join(stateDir, "resources", plan.ResourceKey)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return runtime, fmt.Errorf("create resource directory: %w", err)
+	d.resourcesMu.Lock()
+	defer d.resourcesMu.Unlock()
+	execution := *plan.Execution
+	if err := validateResourceExecution(&execution); err != nil {
+		return runtime, err
 	}
-	if plan.Resources["database"].Mode == "create" {
-		if _, err := os.Stat(filepath.Join(dir, "database-allocation.json")); err == nil {
-			return runtime, fmt.Errorf("remove this app's existing database before creating a different service")
-		} else if !os.IsNotExist(err) {
+	dir := filepath.Join(stateDir, "resources", execution.Key)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return runtime, err
+	}
+	path := filepath.Join(dir, "execution.json")
+	if content, err := os.ReadFile(path); err == nil {
+		var previous ResourceExecution
+		if err := json.Unmarshal(content, &previous); err != nil {
 			return runtime, err
 		}
+		if previous.Project != execution.Project || !reflect.DeepEqual(previous.Dependencies, execution.Dependencies) {
+			return runtime, fmt.Errorf("retained resource dependencies changed; clean up the previous allocation first")
+		}
+	} else if !os.IsNotExist(err) {
+		return runtime, err
 	}
-	credentials, err := loadResourceCredentials(dir)
+	if _, err := loadSecrets(dir, execution.Secrets); err != nil {
+		return runtime, err
+	}
+	content, err := json.Marshal(execution)
 	if err != nil {
 		return runtime, err
 	}
-	if plan.Resources["database"].Mode == "reuse" {
-		if err := d.requireDatabaseService(ctx, plan.DatabaseServiceKey, stateDir); err != nil {
-			return runtime, err
-		}
-	}
-	doc, runtime := resourceCompose(plan, credentials)
-	content, err := json.Marshal(doc)
-	if err != nil {
-		return runtime, fmt.Errorf("encode resources: %w", err)
-	}
-	path := filepath.Join(dir, "compose.json")
+	// Save the unresolved cleanup plan before executing any operation, including partial failures.
 	if err := os.WriteFile(path, content, 0o600); err != nil {
-		return runtime, fmt.Errorf("save resource plan: %w", err)
+		return runtime, err
 	}
-	// Storage-only plans still need a network and volume, which Compose does not create without a service.
+	resolved, err := resolveExecution(execution, stateDir)
+	if err != nil {
+		return runtime, err
+	}
+	composePath := filepath.Join(dir, "compose.json")
+	if err := os.WriteFile(composePath, resolved.Compose, 0o600); err != nil {
+		return runtime, err
+	}
+	var doc ComposeDocument
+	if err := json.Unmarshal(resolved.Compose, &doc); err != nil {
+		return runtime, err
+	}
 	if len(doc.Services) > 0 {
-		if err := d.compose(ctx, project, path, "up", "-d", "--wait", "--wait-timeout", "120"); err != nil {
+		if err := d.compose(ctx, resolved.Project, composePath, "up", "-d", "--wait", "--wait-timeout", "120"); err != nil {
 			return runtime, err
 		}
-	} else {
-		if _, err := exec.CommandContext(ctx, d.bin, "network", "inspect", runtime.Network).Output(); err != nil {
-			if err := exec.CommandContext(ctx, d.bin, "network", "create", runtime.Network).Run(); err != nil {
-				return runtime, fmt.Errorf("create resource network: %w", err)
-			}
+	} else if _, err := exec.CommandContext(ctx, d.bin, "network", "inspect", resolved.Runtime.Network).Output(); err != nil {
+		if err := exec.CommandContext(ctx, d.bin, "network", "create", resolved.Runtime.Network).Run(); err != nil {
+			return runtime, fmt.Errorf("create resource network: %w", err)
 		}
 	}
-	for name := range runtime.Mounts {
-		if err := exec.CommandContext(ctx, d.bin, "volume", "create", name).Run(); err != nil {
-			return runtime, fmt.Errorf("create file volume: %w", err)
-		}
-	}
-	if plan.Resources["database"].Mode == "reuse" && plan.DatabaseServiceKey != plan.ResourceKey {
-		if err := d.prepareDatabaseAllocation(ctx, plan, credentials, stateDir, &runtime); err != nil {
+	for volume := range resolved.Runtime.Mounts {
+		if err := exec.CommandContext(ctx, d.bin, "volume", "create", volume).Run(); err != nil {
 			return runtime, err
 		}
 	}
-	return runtime, nil
+	if err := d.resourceOperations(ctx, resolved, resolved.Prepare); err != nil {
+		return runtime, err
+	}
+	return resolved.Runtime, nil
 }
 
 func (d *DockerManager) compose(ctx context.Context, project, path string, args ...string) error {
@@ -191,89 +263,55 @@ func (d *DockerManager) compose(ctx context.Context, project, path string, args 
 	return nil
 }
 
-func loadResourceCredentials(dir string) (resourceCredentials, error) {
-	path := filepath.Join(dir, "credentials.json")
-	var credentials resourceCredentials
-	content, err := os.ReadFile(path)
-	if err == nil {
-		if err := json.Unmarshal(content, &credentials); err != nil {
-			return credentials, fmt.Errorf("read resource credentials: %w", err)
+func (d *DockerManager) resourceOperations(ctx context.Context, plan ResourceExecution, operations []ResourceOperation) error {
+	for _, op := range operations {
+		project := plan.Project
+		if op.Scope != plan.Key {
+			project = plan.Dependencies[op.Scope]
 		}
-		if credentials.DatabasePassword == "" || credentials.RootPassword == "" || credentials.CachePassword == "" {
-			return credentials, fmt.Errorf("resource credentials are incomplete")
+		out, err := exec.CommandContext(ctx, d.bin, "inspect", "--format", `{{index .Config.Labels "com.docker.compose.project"}}`, op.Container).Output()
+		if err != nil || strings.TrimSpace(string(out)) != project {
+			return fmt.Errorf("resource container is unavailable or outside its managed scope")
 		}
-		return credentials, nil
-	}
-	if !os.IsNotExist(err) {
-		return credentials, fmt.Errorf("read resource credentials: %w", err)
-	}
-	passwords := []*string{&credentials.DatabasePassword, &credentials.RootPassword, &credentials.CachePassword}
-	for _, password := range passwords {
-		value := make([]byte, 32)
-		if _, err := rand.Read(value); err != nil {
-			return credentials, fmt.Errorf("generate resource credentials: %w", err)
+		if op.Action == "exec" {
+			args := []string{"exec", "-i"}
+			env := os.Environ()
+			for name, value := range op.Env {
+				args = append(args, "-e", name)
+				env = append(env, name+"="+value)
+			}
+			args = append(args, op.Container)
+			args = append(args, op.Command...)
+			command := exec.CommandContext(ctx, d.bin, args...)
+			command.Env = env
+			command.Stdin = strings.NewReader(op.Input)
+			if err := command.Run(); err != nil {
+				return fmt.Errorf("resource container operation failed: %w", err)
+			}
+		} else {
+			out, err := exec.CommandContext(ctx, d.bin, "inspect", "--format", "{{json .NetworkSettings.Networks}}", op.Container).Output()
+			if err != nil {
+				return err
+			}
+			var networks map[string]json.RawMessage
+			if err := json.Unmarshal(out, &networks); err != nil {
+				return err
+			}
+			_, connected := networks[op.Network]
+			if (op.Action == "connect" && connected) || (op.Action == "disconnect" && !connected) {
+				continue
+			}
+			args := []string{"network", op.Action}
+			if op.Action == "connect" && op.Alias != "" {
+				args = append(args, "--alias", op.Alias)
+			}
+			args = append(args, op.Network, op.Container)
+			if err := exec.CommandContext(ctx, d.bin, args...).Run(); err != nil {
+				return fmt.Errorf("resource network operation failed: %w", err)
+			}
 		}
-		*password = hex.EncodeToString(value)
 	}
-	content, err = json.Marshal(credentials)
-	if err != nil {
-		return credentials, err
-	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return credentials, fmt.Errorf("create resource credentials: %w", err)
-	}
-	defer file.Close()
-	if _, err := file.Write(content); err != nil {
-		return credentials, fmt.Errorf("save resource credentials: %w", err)
-	}
-	return credentials, nil
-}
-
-func resourceCompose(plan Plan, credentials resourceCredentials) (composeDocument, ResourceRuntime) {
-	project := resourceProject(plan.ResourceKey)
-	doc := composeDocument{Services: map[string]composeService{}, Networks: map[string]composeNetwork{"resources": {Name: project}}, Volumes: map[string]composeVolume{}}
-	runtime := ResourceRuntime{Network: project, Env: map[string]string{}, Mounts: map[string]string{}}
-	if hasManagedResource(plan, "database") {
-		doc.Volumes["database"] = composeVolume{Name: project + "-database"}
-		doc.Services[databaseServiceName(plan.ResourceKey)] = composeService{
-			Image: "mysql:8.4", Restart: "unless-stopped", Networks: []string{"resources"}, Volumes: []string{"database:/var/lib/mysql"},
-			Environment: map[string]string{"MYSQL_DATABASE": "app", "MYSQL_USER": "app", "MYSQL_PASSWORD": credentials.DatabasePassword, "MYSQL_ROOT_PASSWORD": credentials.RootPassword},
-			Healthcheck: composeHealthcheck{Test: []string{"CMD-SHELL", `MYSQL_PWD="$$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u app app -e 'SELECT 1'`}, Interval: "2s", Timeout: "5s", Retries: 60},
-		}
-		runtime.Env = map[string]string{"DB_CONNECTION": "mysql", "DB_HOST": databaseServiceName(plan.ResourceKey), "DB_PORT": "3306", "DB_DATABASE": "app", "DB_USERNAME": "app", "DB_PASSWORD": credentials.DatabasePassword, "DB_URL": ""}
-	}
-	if hasManagedResource(plan, "cache") {
-		doc.Volumes["cache"] = composeVolume{Name: project + "-cache"}
-		doc.Services["cache"] = composeService{
-			Image: "redis:7-alpine", Restart: "unless-stopped", Networks: []string{"resources"}, Volumes: []string{"cache:/data"},
-			Command:     []string{"redis-server", "--appendonly", "yes", "--requirepass", credentials.CachePassword},
-			Environment: map[string]string{"REDISCLI_AUTH": credentials.CachePassword},
-			Healthcheck: composeHealthcheck{Test: []string{"CMD", "redis-cli", "ping"}, Interval: "2s", Timeout: "5s", Retries: 30},
-		}
-		runtime.Env["REDIS_HOST"] = "cache"
-		runtime.Env["REDIS_PORT"] = "6379"
-		runtime.Env["REDIS_PASSWORD"] = credentials.CachePassword
-		runtime.Env["REDIS_URL"] = ""
-		runtime.Env["REDIS_CLIENT"] = "phpredis"
-		runtime.Env["CACHE_STORE"] = "redis"
-		runtime.Env["SESSION_DRIVER"] = "redis"
-	}
-	if hasManagedResource(plan, "storage") {
-		runtime.Mounts[project+"-files"] = "/app/storage/app"
-	}
-	return doc, runtime
-}
-
-func mergeResourceEnvironment(production, resources map[string]string) map[string]string {
-	result := make(map[string]string, len(production)+len(resources))
-	for key, value := range production {
-		result[key] = value
-	}
-	for key, value := range resources {
-		result[key] = value
-	}
-	return result
+	return nil
 }
 
 func (d *DockerManager) DeleteResources(ctx context.Context, key, stateDir string) error {
@@ -285,42 +323,74 @@ func (d *DockerManager) DeleteResources(ctx context.Context, key, stateDir strin
 	}
 	d.resourcesMu.Lock()
 	defer d.resourcesMu.Unlock()
-	if err := d.deleteDatabaseAllocation(ctx, key, stateDir); err != nil {
-		return err
-	}
-	project := resourceProject(key)
 	dir := filepath.Join(stateDir, "resources", key)
-	path := filepath.Join(dir, "compose.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	content, err := os.ReadFile(filepath.Join(dir, "execution.json"))
+	if os.IsNotExist(err) {
+		if _, statError := os.Stat(dir); statError == nil {
+			return fmt.Errorf("retained resources have no saved execution plan; republish before deleting them")
+		} else if !os.IsNotExist(statError) {
+			return statError
+		}
 		return nil
-	} else if err != nil {
-		return err
 	}
-	var doc composeDocument
-	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(content, &doc); err != nil {
-		return fmt.Errorf("read retained resource plan: %w", err)
+	var plan ResourceExecution
+	if err := json.Unmarshal(content, &plan); err != nil {
+		return err
+	}
+	if plan.Key != key {
+		return fmt.Errorf("resource identity differs from cleanup request")
+	}
+	if err := validateResourceExecution(&plan); err != nil {
+		return err
+	}
+	plan, err = resolveExecution(plan, stateDir)
+	if err != nil {
+		return err
+	}
+	if err := d.resourceOperations(ctx, plan, plan.Cleanup); err != nil {
+		return err
+	}
+	var doc ComposeDocument
+	if err := json.Unmarshal(plan.Compose, &doc); err != nil {
+		return err
 	}
 	if len(doc.Services) > 0 {
-		if err := d.compose(ctx, project, path, "down", "--volumes", "--remove-orphans"); err != nil {
+		if err := d.compose(ctx, plan.Project, filepath.Join(dir, "compose.json"), "down", "--volumes", "--remove-orphans"); err != nil {
 			return err
 		}
 	}
-	for _, suffix := range []string{"database", "cache", "files"} {
-		volume := project + "-" + suffix
+	volumes := map[string]bool{}
+	for _, volume := range doc.Volumes {
+		volumes[volume.Name] = true
+	}
+	for volume := range plan.Runtime.Mounts {
+		volumes[volume] = true
+	}
+	for volume := range volumes {
 		if err := exec.CommandContext(ctx, d.bin, "volume", "inspect", volume).Run(); err == nil {
 			if err := exec.CommandContext(ctx, d.bin, "volume", "rm", volume).Run(); err != nil {
-				return fmt.Errorf("remove resource volume: %w", err)
+				return err
 			}
 		}
 	}
-	if err := exec.CommandContext(ctx, d.bin, "network", "inspect", project).Run(); err == nil {
-		if err := exec.CommandContext(ctx, d.bin, "network", "rm", project).Run(); err != nil {
-			return fmt.Errorf("remove resource network: %w", err)
+	if err := exec.CommandContext(ctx, d.bin, "network", "inspect", plan.Project).Run(); err == nil {
+		if err := exec.CommandContext(ctx, d.bin, "network", "rm", plan.Project).Run(); err != nil {
+			return err
 		}
 	}
 	return os.RemoveAll(dir)
+}
+
+func mergeResourceEnvironment(production, resources map[string]string) map[string]string {
+	result := make(map[string]string, len(production)+len(resources))
+	for key, value := range production {
+		result[key] = value
+	}
+	for key, value := range resources {
+		result[key] = value
+	}
+	return result
 }

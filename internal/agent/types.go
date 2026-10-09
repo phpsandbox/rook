@@ -24,14 +24,6 @@ type RuntimePlan struct {
 }
 
 type Plan struct {
-	DatabaseServiceKey string                       `json:"databaseServiceKey,omitempty" msgpack:"databaseServiceKey,omitempty"`
-	Runtime            RuntimePlan                  `json:"runtime" msgpack:"runtime"`
-	ResourceKey        string                       `json:"resourceKey,omitempty" msgpack:"resourceKey,omitempty"`
-	Resources          map[string]ResourceSelection `json:"resources,omitempty" msgpack:"resources,omitempty"`
-}
-
-type ResourceSelection struct {
-	Mode    string `json:"mode" msgpack:"mode"`
-	Type    string `json:"type,omitempty" msgpack:"type,omitempty"`
-	Version string `json:"version,omitempty" msgpack:"version,omitempty"`
+	Runtime   RuntimePlan        `json:"runtime" msgpack:"runtime"`
+	Execution *ResourceExecution `json:"execution,omitempty" msgpack:"execution,omitempty"`
 }

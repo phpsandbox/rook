@@ -45,7 +45,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		return fmt.Errorf("deploy payload requires runtime.healthPath")
 	}
 
-	if err := validateResources(payload.Plan); err != nil {
+	if err := validateResourceExecution(payload.Plan.Execution); err != nil {
 		return err
 	}
 
@@ -155,7 +155,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 
 	routeKey := fmt.Sprintf("deploy--%s", payload.DeploymentID)
 	if err := d.state.Set(payload.DeploymentID, DeploymentState{
-		ResourceKey: payload.Plan.ResourceKey,
+		ResourceKey: resourceKey(payload.Plan.Execution),
 		ContainerID: containerID,
 		Port:        port,
 		ImageRef:    imageTag,
