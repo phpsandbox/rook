@@ -69,6 +69,12 @@ func (e *Executor) Recover() error {
 }
 
 func (e *Executor) Execute(ctx context.Context, request Request, onOutput func(string)) (Result, error) {
+	if request.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
+		defer cancel()
+	}
+
 	path, err := e.operationPath(request.ID)
 	if err != nil {
 		return Result{}, err
@@ -78,26 +84,9 @@ func (e *Executor) Execute(ctx context.Context, request Request, onOutput func(s
 		return Result{}, err
 	}
 	digest := fmt.Sprintf("%x", sha256.Sum256(encoded))
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	previous, err := e.Status(request.ID)
-	if err == nil {
-		if previous.Digest != digest {
-			return Result{}, fmt.Errorf("operation ID already belongs to a different request")
-		}
-		return previous, nil
-	}
-	if !os.IsNotExist(err) {
-		return Result{}, err
-	}
-	result := Result{Status: "running", Digest: digest}
-	if err := saveResult(path, result); err != nil {
-		return Result{}, err
-	}
-	if request.TimeoutSeconds > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
-		defer cancel()
+	result, fresh, err := e.registerOperation(ctx, request.ID, path, digest)
+	if err != nil || !fresh {
+		return result, err
 	}
 	result.Output, result.Data, err = e.apply(ctx, request, onOutput)
 	if err != nil {
@@ -112,7 +101,34 @@ func (e *Executor) Execute(ctx context.Context, request Request, onOutput func(s
 	return result, nil
 }
 
+// Only registration is serialized. An identical concurrent request observes the running record.
+func (e *Executor) registerOperation(ctx context.Context, id, path, digest string) (Result, bool, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Result{}, false, err
+	}
+	previous, err := e.Status(id)
+	if err == nil {
+		if previous.Digest != digest {
+			return Result{}, false, fmt.Errorf("operation ID already belongs to a different request")
+		}
+		return previous, false, nil
+	}
+	if !os.IsNotExist(err) {
+		return Result{}, false, err
+	}
+	result := Result{Status: "running", Digest: digest}
+	if err := saveResult(path, result); err != nil {
+		return Result{}, false, err
+	}
+	return result, true, nil
+}
+
 func (e *Executor) apply(ctx context.Context, r Request, onOutput func(string)) (string, json.RawMessage, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	switch r.Action {
 	case "binding.read":
 		binding, exists := e.Bindings.Get(r.BindingID)
@@ -138,6 +154,7 @@ func (e *Executor) apply(ctx context.Context, r Request, onOutput func(string)) 
 			return "", nil, fmt.Errorf("exec requires argv")
 		}
 		command := exec.CommandContext(ctx, r.Command[0], r.Command[1:]...)
+		configureProcess(command)
 		command.Dir = r.Directory
 		command.Env = os.Environ()
 		for name, value := range r.Env {
@@ -149,6 +166,13 @@ func (e *Executor) apply(ctx context.Context, r Request, onOutput func(string)) 
 		command.Stdout = writer
 		command.Stderr = writer
 		err := command.Run()
+		if command.Process != nil && err != nil {
+			// Also retire descendants when the leader exits but inherited pipes outlive WaitDelay.
+			_ = command.Cancel()
+		}
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return output.String(), nil, err
 	case "write":
 		mode := os.FileMode(0600)

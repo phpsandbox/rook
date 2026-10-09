@@ -12,7 +12,7 @@ The `internal/host.Executor` accepts one request, stores its operation outcome, 
 
 A `host` command carries `payload.id`, `payload.action`, and the fields used by that action:
 
-- `exec`: argv, working directory, environment, stdin, optional timeout in seconds. Output is streamed and retained in a bounded private result. Rook starts a process directly; shell execution requires an explicitly supplied shell argv.
+- `exec`: argv, working directory, environment, stdin, optional timeout in seconds. Output is streamed and retained in a bounded private result. Rook starts a process directly; shell execution requires an explicitly supplied shell argv. Commands run in a separate Unix process group. Cancellation kills that group, and a one-second WaitDelay bounds inherited-pipe waiting; failed commands also retire remaining descendants.
 - `write`, `read`, `remove`, `archive`: private atomic file writes, byte reads, recursive removal, and tar.gz extraction. Archive paths cannot escape their destination. `executable` selects private executable permissions for a written file.
 - `binding.read`, `binding.set`, `binding.remove`: persist and inspect a named port binding with opaque caller metadata. Rook does not interpret release or resource fields in that metadata. The proxy follows the binding's host port. Switching the binding does not stop either process; Okra decides when to retire a previous release.
 - `info`: report the host state directory so Okra can resolve paths.
@@ -23,7 +23,7 @@ Core encrypts resource-owned credentials. Okra generates and retrieves them, res
 
 ## Operation outcomes
 
-Rook saves `running` before starting an effect, then `completed` or `failed` with output, data, and errors. Repeating an ID with the identical request returns its saved outcome; using it for a different request fails. The private journal stores a request digest, not plaintext command credentials. A reconnect does not cancel an executing process. Okra uses stable IDs for source checkout, build, and container start within a release. It inspects the original ID when a response stream is lost or expires, including while the effect is still running.
+Rook saves `running` before starting an effect, then `completed` or `failed` with output, data, and errors. Repeating an ID with the identical request returns its saved outcome; using it for a different request fails. The private journal stores a request digest, not plaintext command credentials. The journal lock protects only the operation-ID check and initial running record; independent effects execute concurrently, and matching in-flight retries observe running status. Request timeouts begin before registration. A reconnect does not cancel an executing process. Okra uses stable IDs for source checkout, build, and container start within a release. It inspects the original ID when a response stream is lost or expires, including while the effect is still running.
 
 A host-process restart marks unfinished operations `interrupted`. Rook never automatically replays uncertain effects. Okra must inspect the host and reconcile them before issuing another operation. This is durable observation and duplicate suppression, not a promise of transactional or exactly-once host effects.
 
