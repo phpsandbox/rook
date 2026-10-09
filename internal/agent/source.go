@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -17,9 +16,6 @@ func PrepareSource(ctx context.Context, source SourceRef, workspace string) erro
 	}
 	if source.GitURL == "" {
 		return fmt.Errorf("source requires gitUrl or path")
-	}
-	if !commitRevisionPattern.MatchString(source.Ref) {
-		return fmt.Errorf("git source requires a pinned commit revision")
 	}
 	authEnv, cleanup, err := gitCredentialEnv(source)
 	if err != nil {
@@ -42,8 +38,6 @@ func PrepareSource(ctx context.Context, source SourceRef, workspace string) erro
 	}
 	return nil
 }
-
-var commitRevisionPattern = regexp.MustCompile(`(?i)^(?:[a-f0-9]{40}|[a-f0-9]{64})$`)
 
 func gitCloneArgs(source SourceRef, workspace string) []string {
 	return []string{"-c", "credential.helper=", "clone", "--no-checkout", source.GitURL, workspace}

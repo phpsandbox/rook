@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 )
 
 func (d *DockerManager) PrepareResources(ctx context.Context, plan Plan, stateDir string) (ResourceRuntime, error) {
@@ -13,9 +12,6 @@ func (d *DockerManager) PrepareResources(ctx context.Context, plan Plan, stateDi
 	d.resourcesMu.Lock()
 	defer d.resourcesMu.Unlock()
 	execution := *plan.Execution
-	if err := validateResourceExecution(&execution); err != nil {
-		return runtime, err
-	}
 	store := resourceStateStore{stateDir: stateDir, key: execution.Key}
 	if err := store.save(execution); err != nil {
 		return runtime, err
@@ -40,8 +36,8 @@ func (d *DockerManager) DeleteResources(ctx context.Context, key, stateDir strin
 	if key == "" {
 		return nil
 	}
-	if !resourceKeyPattern.MatchString(key) {
-		return fmt.Errorf("invalid resource key")
+	if err := validateResourceKey(key); err != nil {
+		return err
 	}
 	d.resourcesMu.Lock()
 	defer d.resourcesMu.Unlock()

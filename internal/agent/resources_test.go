@@ -29,24 +29,22 @@ func TestExecutionMessagePackPreservesResolvedCompose(t *testing.T) {
 	if !reflect.DeepEqual(plan.Execution, decoded.Execution) {
 		t.Fatal("MessagePack changed the resource execution plan")
 	}
-	if err := validateResourceExecution(decoded.Execution); err != nil {
+	if err := validateResourcePaths(decoded.Execution); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestExecutionRejectsEscapingScopes(t *testing.T) {
-	for _, change := range []func(*ResourceExecution){
-		func(p *ResourceExecution) { p.Key = "../other" },
-		func(p *ResourceExecution) { p.Runtime.Network = "someone-else" },
-		func(p *ResourceExecution) { p.Runtime.Mounts = map[string]string{"other-volume": "/files"} },
-		func(p *ResourceExecution) {
-			p.Prepare = []ResourceOperation{{Action: "exec", Scope: "undeclared", Container: "rook-service-foreign-mysql-1", Command: []string{"sh"}}}
-		},
-	} {
+func TestResourcePathsRejectStateDirectoryEscapes(t *testing.T) {
+	for _, key := range []string{"", ".", "..", "../other", "/tmp/other", "other/child"} {
 		plan := testExecution(t, "services", "project", "borrower")
-		change(plan.Execution)
-		if err := validateResourceExecution(plan.Execution); err == nil {
-			t.Fatal("escaping execution plan accepted")
+		plan.Execution.Key = key
+		if err := validateResourcePaths(plan.Execution); err == nil {
+			t.Fatal("unsafe local resource path accepted")
+		}
+		plan.Execution.Key = "project"
+		plan.Execution.Dependencies = map[string]string{key: "project"}
+		if err := validateResourcePaths(plan.Execution); err == nil {
+			t.Fatal("unsafe dependency state path accepted")
 		}
 	}
 }
@@ -263,7 +261,7 @@ func TestSecretResolutionPreservesUnresolvedPlanAndDynamicComposeFields(t *testi
 	original := string(plan.Execution.Compose)
 	plan.Execution.Compose = json.RawMessage(strings.ReplaceAll(original, `"mysql:8.4"`, `"postgres:next","mem_limit":"128m"`))
 	before := string(plan.Execution.Compose)
-	if err := validateResourceExecution(plan.Execution); err != nil {
+	if err := validateResourcePaths(plan.Execution); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()

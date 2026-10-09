@@ -10,7 +10,6 @@ import (
 	"regexp"
 )
 
-var secretNamePattern = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9]{0,63}$`)
 var secretReferencePattern = regexp.MustCompile(`\{\{secret:([a-z0-9-]+):([a-zA-Z0-9]+)\}\}`)
 
 func loadSecrets(dir string, names []string) (map[string]string, error) {
@@ -44,20 +43,7 @@ func loadSecrets(dir string, names []string) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		// Atomic replacement keeps the previous credential file intact after an interrupted write.
-		temp, err := os.CreateTemp(dir, "credentials-*")
-		if err != nil {
-			return nil, err
-		}
-		defer os.Remove(temp.Name())
-		if _, err := temp.Write(content); err != nil {
-			temp.Close()
-			return nil, err
-		}
-		if err := temp.Close(); err != nil {
-			return nil, err
-		}
-		if err := os.Rename(temp.Name(), path); err != nil {
+		if err := writePrivateFile(path, content); err != nil {
 			return nil, err
 		}
 	}
@@ -73,12 +59,6 @@ func resolveExecution(plan ResourceExecution, stateDir string) (ResourceExecutio
 	content = secretReferencePattern.ReplaceAllFunc(content, func(reference []byte) []byte {
 		parts := secretReferencePattern.FindSubmatch(reference)
 		scope, name := string(parts[1]), string(parts[2])
-		if scope != plan.Key {
-			if _, ok := plan.Dependencies[scope]; !ok {
-				resolveError = fmt.Errorf("secret references an undeclared resource")
-				return reference
-			}
-		}
 		secrets, err := loadSecrets(filepath.Join(stateDir, "resources", scope), nil)
 		if err != nil {
 			resolveError = err

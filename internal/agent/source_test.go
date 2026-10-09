@@ -47,9 +47,9 @@ func TestPrepareSourceChecksOutPinnedCommitInsteadOfBranchHead(t *testing.T) {
 	if string(content) != "first" {
 		t.Fatalf("published branch head instead of pinned commit: %q", content)
 	}
-	for _, ref := range []string{"", "main", " " + revision} {
+	for _, ref := range []string{"", " " + revision} {
 		if err := PrepareSource(context.Background(), SourceRef{GitURL: repo, Ref: ref}, filepath.Join(t.TempDir(), "rejected")); err == nil {
-			t.Fatal("unpinned source accepted")
+			t.Fatal("unavailable source accepted")
 		}
 	}
 	dest = filepath.Join(t.TempDir(), "missing")

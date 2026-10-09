@@ -12,7 +12,7 @@ import (
 
 func (d *DockerManager) startResourceContainers(ctx context.Context, plan ResourceExecution, dir string) error {
 	composePath := filepath.Join(dir, "compose.json")
-	if err := os.WriteFile(composePath, plan.Compose, 0o600); err != nil {
+	if err := writePrivateFile(composePath, plan.Compose); err != nil {
 		return err
 	}
 	var doc ComposeDocument
@@ -23,9 +23,15 @@ func (d *DockerManager) startResourceContainers(ctx context.Context, plan Resour
 		if err := d.compose(ctx, plan.Project, composePath, "up", "-d", "--wait", "--wait-timeout", "120"); err != nil {
 			return err
 		}
-	} else if _, err := exec.CommandContext(ctx, d.bin, "network", "inspect", plan.Runtime.Network).Output(); err != nil {
-		if err := exec.CommandContext(ctx, d.bin, "network", "create", plan.Runtime.Network).Run(); err != nil {
-			return fmt.Errorf("create resource network: %w", err)
+	} else {
+		exists, err := d.resourceObjectExists(ctx, "network", plan.Runtime.Network)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			if err := exec.CommandContext(ctx, d.bin, "network", "create", plan.Runtime.Network).Run(); err != nil {
+				return fmt.Errorf("create resource network: %w", err)
+			}
 		}
 	}
 	for volume := range plan.Runtime.Mounts {
@@ -113,16 +119,37 @@ func (d *DockerManager) removeResourceContainers(ctx context.Context, plan Resou
 		volumes[volume] = true
 	}
 	for volume := range volumes {
-		if err := exec.CommandContext(ctx, d.bin, "volume", "inspect", volume).Run(); err == nil {
+		exists, err := d.resourceObjectExists(ctx, "volume", volume)
+		if err != nil {
+			return err
+		}
+		if exists {
 			if err := exec.CommandContext(ctx, d.bin, "volume", "rm", volume).Run(); err != nil {
 				return err
 			}
 		}
 	}
-	if err := exec.CommandContext(ctx, d.bin, "network", "inspect", plan.Project).Run(); err == nil {
+	exists, err := d.resourceObjectExists(ctx, "network", plan.Project)
+	if err != nil {
+		return err
+	}
+	if exists {
 		if err := exec.CommandContext(ctx, d.bin, "network", "rm", plan.Project).Run(); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (d *DockerManager) resourceObjectExists(ctx context.Context, kind, name string) (bool, error) {
+	out, err := exec.CommandContext(ctx, d.bin, kind, "ls", "--format", "{{.Name}}").Output()
+	if err != nil {
+		return false, fmt.Errorf("list resource %s objects: %w", kind, err)
+	}
+	for _, existing := range strings.Fields(string(out)) {
+		if existing == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }

@@ -44,7 +44,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		return fmt.Errorf("deploy payload requires runtime.healthPath")
 	}
 
-	if err := validateResourceExecution(payload.Plan.Execution); err != nil {
+	if err := validateResourcePaths(payload.Plan.Execution); err != nil {
 		return err
 	}
 

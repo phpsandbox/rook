@@ -3,9 +3,9 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 )
 
 type resourceStateStore struct {
@@ -18,6 +18,9 @@ func (s resourceStateStore) directory() string {
 }
 
 func (s resourceStateStore) load() (*ResourceExecution, error) {
+	if err := validateResourceKey(s.key); err != nil {
+		return nil, err
+	}
 	content, err := os.ReadFile(filepath.Join(s.directory(), "execution.json"))
 	if os.IsNotExist(err) {
 		if _, statError := os.Stat(s.directory()); statError == nil {
@@ -37,7 +40,7 @@ func (s resourceStateStore) load() (*ResourceExecution, error) {
 	if plan.Key != s.key {
 		return nil, fmt.Errorf("resource identity differs from stored state")
 	}
-	if err := validateResourceExecution(&plan); err != nil {
+	if err := validateResourcePaths(&plan); err != nil {
 		return nil, err
 	}
 	return &plan, nil
@@ -48,8 +51,23 @@ func (s resourceStateStore) save(plan ResourceExecution) error {
 	if err != nil {
 		return err
 	}
-	if previous != nil && (previous.Project != plan.Project || !reflect.DeepEqual(previous.Dependencies, plan.Dependencies)) {
+	if previous != nil && (previous.Project != plan.Project || !maps.Equal(previous.Dependencies, plan.Dependencies)) {
 		return fmt.Errorf("retained resource dependencies changed; clean up the previous allocation first")
+	}
+	if previous != nil {
+		before, err := resourceInventory(*previous)
+		if err != nil {
+			return err
+		}
+		after, err := resourceInventory(plan)
+		if err != nil {
+			return err
+		}
+		for name := range before {
+			if !after[name] {
+				return fmt.Errorf("retained resource %s was omitted; clean up the previous resources first", name)
+			}
+		}
 	}
 	if err := os.MkdirAll(s.directory(), 0o700); err != nil {
 		return err
@@ -59,9 +77,27 @@ func (s resourceStateStore) save(plan ResourceExecution) error {
 		return err
 	}
 	// Persist cleanup instructions before executing operations, including partial failures.
-	return os.WriteFile(filepath.Join(s.directory(), "execution.json"), content, 0o600)
+	return writePrivateFile(filepath.Join(s.directory(), "execution.json"), content)
 }
 
 func (s resourceStateStore) remove() error {
 	return os.RemoveAll(s.directory())
+}
+
+func resourceInventory(plan ResourceExecution) (map[string]bool, error) {
+	var doc ComposeDocument
+	if err := json.Unmarshal(plan.Compose, &doc); err != nil {
+		return nil, err
+	}
+	inventory := map[string]bool{}
+	for service := range doc.Services {
+		inventory["service:"+service] = true
+	}
+	for _, volume := range doc.Volumes {
+		inventory["volume:"+volume.Name] = true
+	}
+	for volume := range plan.Runtime.Mounts {
+		inventory["volume:"+volume] = true
+	}
+	return inventory, nil
 }
