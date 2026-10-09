@@ -54,28 +54,39 @@
       "alias": "database"
     }
   ],
-  "cleanup": [
-    {
-      "action": "exec",
-      "scope": "bde017fb-cc01-46c9-9c83-4558dd9f9568",
-      "container": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-mysql-1",
-      "command": [
-        "mysql",
-        "-h",
-        "127.0.0.1",
-        "-u",
-        "root"
-      ],
-      "env": {
-        "MYSQL_PWD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:rootPassword}}"
+  "ownership": {
+    "allocation:bde017fb-cc01-46c9-9c83-4558dd9f9568:app_b1bb03dcca5d2651": {
+      "project": "rook-service-775303c8-08b3-428f-9b6a-3425265d24c4",
+      "dependencies": {
+        "bde017fb-cc01-46c9-9c83-4558dd9f9568": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568"
       },
-      "input": "DROP DATABASE IF EXISTS `app_b1bb03dcca5d2651`; DROP USER IF EXISTS 'app_b1bb03dcca5d2651'@'%';"
+      "operations": [
+        {
+          "action": "exec",
+          "scope": "bde017fb-cc01-46c9-9c83-4558dd9f9568",
+          "container": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-mysql-1",
+          "command": [
+            "mysql",
+            "-h",
+            "127.0.0.1",
+            "-u",
+            "root"
+          ],
+          "env": {
+            "MYSQL_PWD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:rootPassword}}"
+          },
+          "input": "DROP DATABASE IF EXISTS `app_b1bb03dcca5d2651`; DROP USER IF EXISTS 'app_b1bb03dcca5d2651'@'%';"
+        },
+        {
+          "action": "disconnect",
+          "scope": "bde017fb-cc01-46c9-9c83-4558dd9f9568",
+          "container": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-mysql-1",
+          "network": "rook-service-775303c8-08b3-428f-9b6a-3425265d24c4"
+        }
+      ]
     },
-    {
-      "action": "disconnect",
-      "scope": "bde017fb-cc01-46c9-9c83-4558dd9f9568",
-      "container": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-mysql-1",
+    "network:rook-service-775303c8-08b3-428f-9b6a-3425265d24c4": {
       "network": "rook-service-775303c8-08b3-428f-9b6a-3425265d24c4"
     }
-  ]
+  }
 }

@@ -7,19 +7,20 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/phpsandbox/rook/internal/resources"
 )
 
 const sourceContextDir = "app"
 const deployManifestSchemaVersion = 1
 
 type Deployer struct {
-	docker DockerClient
-	state  *StateStore
+	docker    DockerClient
+	state     *StateStore
+	resources *resources.Executor
 }
 
 type DockerClient interface {
-	PrepareResources(ctx context.Context, plan Plan, stateDir string) (ResourceRuntime, error)
-	DeleteResources(ctx context.Context, key, stateDir string) error
 	Build(ctx context.Context, contextDir string, tag string, env map[string]string, onOutput func(string)) error
 	Run(ctx context.Context, opts RunOptions) (string, error)
 	Stop(ctx context.Context, containerID string) error
@@ -29,8 +30,8 @@ type DockerClient interface {
 	WaitHealthy(ctx context.Context, containerID string, hostPort int, healthPath string, timeout time.Duration) error
 }
 
-func NewDeployer(docker DockerClient, state *StateStore) *Deployer {
-	return &Deployer{docker: docker, state: state}
+func NewDeployer(docker DockerClient, state *StateStore, executor *resources.Executor) *Deployer {
+	return &Deployer{docker: docker, state: state, resources: executor}
 }
 
 func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(OutboundMessage)) error {
@@ -44,7 +45,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		return fmt.Errorf("deploy payload requires runtime.healthPath")
 	}
 
-	if err := validateResourcePaths(payload.Plan.Execution); err != nil {
+	if err := resources.ValidatePaths(payload.Plan.Execution); err != nil {
 		return err
 	}
 
@@ -126,7 +127,7 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 	existing, hasExisting := d.state.Get(payload.DeploymentID)
 
 	emitLog("deploy", "Preparing persistent resources...")
-	resources, err := d.docker.PrepareResources(ctx, payload.Plan, d.state.dir)
+	resourceRuntime, err := d.resources.Prepare(ctx, payload.Plan.Execution)
 	if err != nil {
 		return fmt.Errorf("prepare resources: %w", err)
 	}
@@ -138,9 +139,9 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		Command:       payload.Plan.Runtime.Command,
 		HostPort:      port,
 		ContainerPort: payload.Plan.Runtime.Port,
-		Env:           mergeResourceEnvironment(payload.Env, resources.Env),
-		Network:       resources.Network,
-		Mounts:        resources.Mounts,
+		Env:           mergeResourceEnvironment(payload.Env, resourceRuntime.Env),
+		Network:       resourceRuntime.Network,
+		Mounts:        resourceRuntime.Mounts,
 	})
 	if err != nil {
 		return fmt.Errorf("start container: %w", err)
@@ -212,7 +213,7 @@ func (d *Deployer) Delete(ctx context.Context, payload DeletePayload) error {
 		}
 	}
 	if payload.DeleteResources {
-		if err := d.docker.DeleteResources(ctx, key, d.state.dir); err != nil {
+		if err := d.resources.Delete(ctx, key); err != nil {
 			return err
 		}
 	}
@@ -256,4 +257,15 @@ func hostPortAvailable(port int) bool {
 func exists(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
+}
+
+func mergeResourceEnvironment(production, resources map[string]string) map[string]string {
+	result := make(map[string]string, len(production)+len(resources))
+	for key, value := range production {
+		result[key] = value
+	}
+	for key, value := range resources {
+		result[key] = value
+	}
+	return result
 }

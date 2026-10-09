@@ -1,0 +1,192 @@
+{
+  "key": "bde017fb-cc01-46c9-9c83-4558dd9f9568",
+  "project": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568",
+  "secrets": [
+    "databasePassword",
+    "rootPassword",
+    "cachePassword"
+  ],
+  "compose": {
+    "services": {
+      "cache": {
+        "image": "redis:7-alpine",
+        "restart": "unless-stopped",
+        "environment": {
+          "REDISCLI_AUTH": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:cachePassword}}"
+        },
+        "command": [
+          "redis-server",
+          "--appendonly",
+          "yes",
+          "--requirepass",
+          "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:cachePassword}}"
+        ],
+        "volumes": [
+          "cache:/data"
+        ],
+        "networks": [
+          "resources"
+        ],
+        "healthcheck": {
+          "test": [
+            "CMD",
+            "redis-cli",
+            "ping"
+          ],
+          "interval": "2s",
+          "timeout": "5s",
+          "retries": 30
+        }
+      },
+      "mysql": {
+        "image": "mysql:8.4",
+        "restart": "unless-stopped",
+        "environment": {
+          "MYSQL_DATABASE": "app",
+          "MYSQL_PASSWORD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:databasePassword}}",
+          "MYSQL_ROOT_PASSWORD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:rootPassword}}",
+          "MYSQL_USER": "app"
+        },
+        "volumes": [
+          "database:/var/lib/mysql"
+        ],
+        "networks": [
+          "resources"
+        ],
+        "healthcheck": {
+          "test": [
+            "CMD-SHELL",
+            "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u app app -e 'SELECT 1'"
+          ],
+          "interval": "2s",
+          "timeout": "5s",
+          "retries": 60
+        }
+      }
+    },
+    "networks": {
+      "resources": {
+        "name": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568"
+      }
+    },
+    "volumes": {
+      "cache": {
+        "name": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-cache"
+      },
+      "database": {
+        "name": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-database"
+      }
+    }
+  },
+  "runtime": {
+    "network": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568",
+    "mounts": {
+      "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-files": "/app/storage/app"
+    },
+    "env": {
+      "CACHE_STORE": "redis",
+      "DB_CONNECTION": "mysql",
+      "DB_DATABASE": "app",
+      "DB_HOST": "mysql",
+      "DB_PASSWORD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:databasePassword}}",
+      "DB_PORT": "3306",
+      "DB_URL": "",
+      "DB_USERNAME": "app",
+      "REDIS_CLIENT": "phpredis",
+      "REDIS_HOST": "cache",
+      "REDIS_PASSWORD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:cachePassword}}",
+      "REDIS_PORT": "6379",
+      "REDIS_URL": "",
+      "SESSION_DRIVER": "redis"
+    }
+  },
+  "ownership": {
+    "network:rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568": {
+      "network": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568"
+    },
+    "project:rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568": {
+      "project": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568",
+      "compose": {
+        "services": {
+          "cache": {
+            "image": "redis:7-alpine",
+            "restart": "unless-stopped",
+            "environment": {
+              "REDISCLI_AUTH": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:cachePassword}}"
+            },
+            "command": [
+              "redis-server",
+              "--appendonly",
+              "yes",
+              "--requirepass",
+              "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:cachePassword}}"
+            ],
+            "volumes": [
+              "cache:/data"
+            ],
+            "networks": [
+              "resources"
+            ],
+            "healthcheck": {
+              "test": [
+                "CMD",
+                "redis-cli",
+                "ping"
+              ],
+              "interval": "2s",
+              "timeout": "5s",
+              "retries": 30
+            }
+          },
+          "mysql": {
+            "image": "mysql:8.4",
+            "restart": "unless-stopped",
+            "environment": {
+              "MYSQL_DATABASE": "app",
+              "MYSQL_PASSWORD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:databasePassword}}",
+              "MYSQL_ROOT_PASSWORD": "{{secret:bde017fb-cc01-46c9-9c83-4558dd9f9568:rootPassword}}",
+              "MYSQL_USER": "app"
+            },
+            "volumes": [
+              "database:/var/lib/mysql"
+            ],
+            "networks": [
+              "resources"
+            ],
+            "healthcheck": {
+              "test": [
+                "CMD-SHELL",
+                "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u app app -e 'SELECT 1'"
+              ],
+              "interval": "2s",
+              "timeout": "5s",
+              "retries": 60
+            }
+          }
+        },
+        "networks": {
+          "resources": {
+            "name": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568"
+          }
+        },
+        "volumes": {
+          "cache": {
+            "name": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-cache"
+          },
+          "database": {
+            "name": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-database"
+          }
+        }
+      }
+    },
+    "volume:rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-cache": {
+      "volume": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-cache"
+    },
+    "volume:rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-database": {
+      "volume": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-database"
+    },
+    "volume:rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-files": {
+      "volume": "rook-service-bde017fb-cc01-46c9-9c83-4558dd9f9568-files"
+    }
+  }
+}

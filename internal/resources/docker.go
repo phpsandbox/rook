@@ -1,4 +1,4 @@
-package agent
+package resources
 
 import (
 	"context"
@@ -10,12 +10,14 @@ import (
 	"strings"
 )
 
-func (d *DockerManager) startResourceContainers(ctx context.Context, plan ResourceExecution, dir string) error {
+func (d *Executor) startResourceContainers(ctx context.Context, plan Plan, dir string) error {
 	composePath := filepath.Join(dir, "compose.json")
 	if err := writePrivateFile(composePath, plan.Compose); err != nil {
 		return err
 	}
-	var doc ComposeDocument
+	var doc struct {
+		Services map[string]json.RawMessage `json:"services"`
+	}
 	if err := json.Unmarshal(plan.Compose, &doc); err != nil {
 		return err
 	}
@@ -29,34 +31,34 @@ func (d *DockerManager) startResourceContainers(ctx context.Context, plan Resour
 			return err
 		}
 		if !exists {
-			if err := exec.CommandContext(ctx, d.bin, "network", "create", plan.Runtime.Network).Run(); err != nil {
+			if err := exec.CommandContext(ctx, d.DockerBin, "network", "create", plan.Runtime.Network).Run(); err != nil {
 				return fmt.Errorf("create resource network: %w", err)
 			}
 		}
 	}
 	for volume := range plan.Runtime.Mounts {
-		if err := exec.CommandContext(ctx, d.bin, "volume", "create", volume).Run(); err != nil {
+		if err := exec.CommandContext(ctx, d.DockerBin, "volume", "create", volume).Run(); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (d *DockerManager) compose(ctx context.Context, project, path string, args ...string) error {
+func (d *Executor) compose(ctx context.Context, project, path string, args ...string) error {
 	commandArgs := append([]string{"compose", "--project-name", project, "--file", path}, args...)
-	if err := exec.CommandContext(ctx, d.bin, commandArgs...).Run(); err != nil {
+	if err := exec.CommandContext(ctx, d.DockerBin, commandArgs...).Run(); err != nil {
 		return fmt.Errorf("resource Compose operation failed: %w", err)
 	}
 	return nil
 }
 
-func (d *DockerManager) resourceOperations(ctx context.Context, plan ResourceExecution, operations []ResourceOperation) error {
+func (d *Executor) resourceOperations(ctx context.Context, plan Plan, operations []Operation) error {
 	for _, op := range operations {
 		project := plan.Project
 		if op.Scope != plan.Key {
 			project = plan.Dependencies[op.Scope]
 		}
-		out, err := exec.CommandContext(ctx, d.bin, "inspect", "--format", `{{index .Config.Labels "com.docker.compose.project"}}`, op.Container).Output()
+		out, err := exec.CommandContext(ctx, d.DockerBin, "inspect", "--format", `{{index .Config.Labels "com.docker.compose.project"}}`, op.Container).Output()
 		if err != nil || strings.TrimSpace(string(out)) != project {
 			return fmt.Errorf("resource container is unavailable or outside its managed scope")
 		}
@@ -69,14 +71,14 @@ func (d *DockerManager) resourceOperations(ctx context.Context, plan ResourceExe
 			}
 			args = append(args, op.Container)
 			args = append(args, op.Command...)
-			command := exec.CommandContext(ctx, d.bin, args...)
+			command := exec.CommandContext(ctx, d.DockerBin, args...)
 			command.Env = env
 			command.Stdin = strings.NewReader(op.Input)
 			if err := command.Run(); err != nil {
 				return fmt.Errorf("resource container operation failed: %w", err)
 			}
 		} else {
-			out, err := exec.CommandContext(ctx, d.bin, "inspect", "--format", "{{json .NetworkSettings.Networks}}", op.Container).Output()
+			out, err := exec.CommandContext(ctx, d.DockerBin, "inspect", "--format", "{{json .NetworkSettings.Networks}}", op.Container).Output()
 			if err != nil {
 				return err
 			}
@@ -93,7 +95,7 @@ func (d *DockerManager) resourceOperations(ctx context.Context, plan ResourceExe
 				args = append(args, "--alias", op.Alias)
 			}
 			args = append(args, op.Network, op.Container)
-			if err := exec.CommandContext(ctx, d.bin, args...).Run(); err != nil {
+			if err := exec.CommandContext(ctx, d.DockerBin, args...).Run(); err != nil {
 				return fmt.Errorf("resource network operation failed: %w", err)
 			}
 		}
@@ -101,48 +103,8 @@ func (d *DockerManager) resourceOperations(ctx context.Context, plan ResourceExe
 	return nil
 }
 
-func (d *DockerManager) removeResourceContainers(ctx context.Context, plan ResourceExecution, dir string) error {
-	var doc ComposeDocument
-	if err := json.Unmarshal(plan.Compose, &doc); err != nil {
-		return err
-	}
-	if len(doc.Services) > 0 {
-		if err := d.compose(ctx, plan.Project, filepath.Join(dir, "compose.json"), "down", "--volumes", "--remove-orphans"); err != nil {
-			return err
-		}
-	}
-	volumes := map[string]bool{}
-	for _, volume := range doc.Volumes {
-		volumes[volume.Name] = true
-	}
-	for volume := range plan.Runtime.Mounts {
-		volumes[volume] = true
-	}
-	for volume := range volumes {
-		exists, err := d.resourceObjectExists(ctx, "volume", volume)
-		if err != nil {
-			return err
-		}
-		if exists {
-			if err := exec.CommandContext(ctx, d.bin, "volume", "rm", volume).Run(); err != nil {
-				return err
-			}
-		}
-	}
-	exists, err := d.resourceObjectExists(ctx, "network", plan.Project)
-	if err != nil {
-		return err
-	}
-	if exists {
-		if err := exec.CommandContext(ctx, d.bin, "network", "rm", plan.Project).Run(); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (d *DockerManager) resourceObjectExists(ctx context.Context, kind, name string) (bool, error) {
-	out, err := exec.CommandContext(ctx, d.bin, kind, "ls", "--format", "{{.Name}}").Output()
+func (d *Executor) resourceObjectExists(ctx context.Context, kind, name string) (bool, error) {
+	out, err := exec.CommandContext(ctx, d.DockerBin, kind, "ls", "--format", "{{.Name}}").Output()
 	if err != nil {
 		return false, fmt.Errorf("list resource %s objects: %w", kind, err)
 	}

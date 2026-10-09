@@ -1,4 +1,4 @@
-package agent
+package resources
 
 import (
 	"crypto/rand"
@@ -50,7 +50,7 @@ func loadSecrets(dir string, names []string) (map[string]string, error) {
 	return secrets, nil
 }
 
-func resolveExecution(plan ResourceExecution, stateDir string) (ResourceExecution, error) {
+func resolveExecution(plan Plan, stateDir string) (Plan, error) {
 	content, err := json.Marshal(plan)
 	if err != nil {
 		return plan, err
@@ -75,7 +75,7 @@ func resolveExecution(plan ResourceExecution, stateDir string) (ResourceExecutio
 	if resolveError != nil {
 		return plan, resolveError
 	}
-	var resolved ResourceExecution
+	var resolved Plan
 	if err := json.Unmarshal(content, &resolved); err != nil {
 		return plan, err
 	}

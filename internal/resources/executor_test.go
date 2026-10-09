@@ -1,4 +1,4 @@
-package agent
+package resources
 
 import (
 	"context"
@@ -26,10 +26,10 @@ func TestExecutionMessagePackPreservesResolvedCompose(t *testing.T) {
 	if err := msgpack.Unmarshal(content, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(plan.Execution, decoded.Execution) {
+	if !reflect.DeepEqual(*plan, decoded) {
 		t.Fatal("MessagePack changed the resource execution plan")
 	}
-	if err := validateResourcePaths(decoded.Execution); err != nil {
+	if err := ValidatePaths(&decoded); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -37,13 +37,13 @@ func TestExecutionMessagePackPreservesResolvedCompose(t *testing.T) {
 func TestResourcePathsRejectStateDirectoryEscapes(t *testing.T) {
 	for _, key := range []string{"", ".", "..", "../other", "/tmp/other", "other/child"} {
 		plan := testExecution(t, "services", "project", "borrower")
-		plan.Execution.Key = key
-		if err := validateResourcePaths(plan.Execution); err == nil {
+		plan.Key = key
+		if err := ValidatePaths(plan); err == nil {
 			t.Fatal("unsafe local resource path accepted")
 		}
-		plan.Execution.Key = "project"
-		plan.Execution.Dependencies = map[string]string{key: "project"}
-		if err := validateResourcePaths(plan.Execution); err == nil {
+		plan.Key = "project"
+		plan.Dependencies = map[string]string{key: "project"}
+		if err := ValidatePaths(plan); err == nil {
 			t.Fatal("unsafe dependency state path accepted")
 		}
 	}
@@ -77,11 +77,11 @@ func TestManagedResourcesPersistAcrossComposeRestart(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	manager := NewDockerManager()
 	key := testServiceID(t)
 	plan := testExecution(t, "services", key, "")
 	dir := t.TempDir()
-	project := plan.Execution.Project
+	manager := &Executor{DockerBin: "docker", StateDir: dir}
+	project := plan.Project
 	path := filepath.Join(dir, "resources", key, "compose.json")
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
@@ -89,7 +89,7 @@ func TestManagedResourcesPersistAcrossComposeRestart(t *testing.T) {
 		_ = manager.compose(cleanup, project, path, "down", "--volumes")
 		_ = exec.CommandContext(cleanup, "docker", "volume", "rm", project+"-files").Run()
 	})
-	runtime, err := manager.PrepareResources(ctx, plan, dir)
+	runtime, err := manager.Prepare(ctx, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestManagedResourcesPersistAcrossComposeRestart(t *testing.T) {
 	if err := manager.compose(ctx, project, path, "down"); err != nil {
 		t.Fatal(err)
 	}
-	next, err := manager.PrepareResources(ctx, plan, dir)
+	next, err := manager.Prepare(ctx, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,25 @@ func TestManagedResourcesPersistAcrossComposeRestart(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(out)) != "persistent" {
 		t.Fatal("persistent file storage failed", err)
 	}
-	if err := manager.DeleteResources(ctx, key, dir); err != nil {
+	delete(plan.Runtime.Mounts, volume)
+	delete(plan.Ownership, "volume:"+volume)
+	if _, err := manager.Prepare(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.CommandContext(ctx, "docker", "volume", "inspect", volume).Run(); err != nil {
+		t.Fatal("omission deleted a retained resource", err)
+	}
+	plan.Release = []string{"volume:" + volume}
+	if _, err := manager.Prepare(ctx, plan); err != nil {
+		t.Fatal("explicit release failed", err)
+	}
+	if err := exec.CommandContext(ctx, "docker", "volume", "inspect", volume).Run(); err == nil {
+		t.Fatal("released volume is still present")
+	}
+	if sql("SELECT value FROM proof") != "persistent" {
+		t.Fatal("releasing files damaged the retained database")
+	}
+	if err := manager.Delete(ctx, key); err != nil {
 		t.Fatal(err)
 	}
 	for _, suffix := range []string{"database", "cache", "files"} {
@@ -163,35 +181,35 @@ func TestSharedMySQLKeepsAppDatabasesIsolatedAndDeletesOnlyBorrowerData(t *testi
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
-	manager := NewDockerManager()
 	key := testServiceID(t)
 	borrowerKey := testServiceID(t)
 	dir := t.TempDir()
+	manager := &Executor{DockerBin: "docker", StateDir: dir}
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
-		_ = manager.DeleteResources(cleanup, borrowerKey, dir)
-		_ = manager.DeleteResources(cleanup, key, dir)
+		_ = manager.Delete(cleanup, borrowerKey)
+		_ = manager.Delete(cleanup, key)
 	})
 	ownerPlan := testExecution(t, "services", key, "")
-	owner, err := manager.PrepareResources(ctx, ownerPlan, dir)
+	owner, err := manager.Prepare(ctx, ownerPlan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	borrowerPlan := testExecution(t, "allocation", key, borrowerKey)
-	borrower, err := manager.PrepareResources(ctx, borrowerPlan, dir)
+	borrower, err := manager.Prepare(ctx, borrowerPlan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	query := func(runtime ResourceRuntime, sql string) ([]byte, error) {
-		command := exec.CommandContext(ctx, "docker", "exec", "-e", "MYSQL_PWD", ownerPlan.Execution.Project+"-mysql-1", "mysql", "-h", "127.0.0.1", "-u", runtime.Env["DB_USERNAME"], "-N", runtime.Env["DB_DATABASE"], "-e", sql)
+	query := func(runtime Runtime, sql string) ([]byte, error) {
+		command := exec.CommandContext(ctx, "docker", "exec", "-e", "MYSQL_PWD", ownerPlan.Project+"-mysql-1", "mysql", "-h", "127.0.0.1", "-u", runtime.Env["DB_USERNAME"], "-N", runtime.Env["DB_DATABASE"], "-e", sql)
 		command.Env = append(os.Environ(), "MYSQL_PWD="+runtime.Env["DB_PASSWORD"])
 		return command.CombinedOutput()
 	}
 	if borrower.Env["DB_DATABASE"] == owner.Env["DB_DATABASE"] || borrower.Env["DB_PASSWORD"] == owner.Env["DB_PASSWORD"] {
 		t.Fatal("app credentials or databases are shared")
 	}
-	for _, runtime := range []ResourceRuntime{owner, borrower} {
+	for _, runtime := range []Runtime{owner, borrower} {
 		if _, err := query(runtime, "CREATE TABLE proof (value VARCHAR(32)); INSERT INTO proof VALUES ('persistent');"); err != nil {
 			t.Fatal("database write failed", err)
 		}
@@ -202,12 +220,9 @@ func TestSharedMySQLKeepsAppDatabasesIsolatedAndDeletesOnlyBorrowerData(t *testi
 	if _, err := query(owner, "SELECT * FROM `"+borrower.Env["DB_DATABASE"]+"`.proof"); err == nil {
 		t.Fatal("owner app login can read borrower's database")
 	}
-	next, err := manager.PrepareResources(ctx, borrowerPlan, dir)
+	next, err := manager.Prepare(ctx, borrowerPlan)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := manager.PrepareResources(ctx, testExecution(t, "services", borrowerKey, ""), dir); err == nil {
-		t.Fatal("creating another service abandoned retained borrower data")
 	}
 	if next.Env["DB_PASSWORD"] != borrower.Env["DB_PASSWORD"] {
 		t.Fatal("borrower credentials changed on republish")
@@ -215,7 +230,7 @@ func TestSharedMySQLKeepsAppDatabasesIsolatedAndDeletesOnlyBorrowerData(t *testi
 	if out, err := query(next, "SELECT value FROM proof"); err != nil || strings.TrimSpace(string(out)) != "persistent" {
 		t.Fatal("borrower data lost on republish", err)
 	}
-	if err := manager.DeleteResources(ctx, borrowerKey, dir); err != nil {
+	if err := manager.Delete(ctx, borrowerKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := query(borrower, "SELECT value FROM proof"); err == nil {
@@ -236,7 +251,7 @@ func testServiceID(t *testing.T) string {
 }
 
 // These plans are generated and verified by Okra's provider tests. Rook only consumes the wire contract.
-func testExecution(t *testing.T, fixture, owner, borrower string) Plan {
+func testExecution(t *testing.T, fixture, owner, borrower string) *Plan {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join("testdata", fixture+".json"))
 	if err != nil {
@@ -249,19 +264,19 @@ func testExecution(t *testing.T, fixture, owner, borrower string) Plan {
 	}
 	text = strings.ReplaceAll(text, "bde017fb-cc01-46c9-9c83-4558dd9f9568", owner)
 	text = strings.ReplaceAll(text, "775303c8-08b3-428f-9b6a-3425265d24c4", borrower)
-	var execution ResourceExecution
+	var execution Plan
 	if err := json.Unmarshal([]byte(text), &execution); err != nil {
 		t.Fatal(err)
 	}
-	return Plan{Execution: &execution}
+	return &execution
 }
 
 func TestSecretResolutionPreservesUnresolvedPlanAndDynamicComposeFields(t *testing.T) {
 	plan := testExecution(t, "services", "project", "")
-	original := string(plan.Execution.Compose)
-	plan.Execution.Compose = json.RawMessage(strings.ReplaceAll(original, `"mysql:8.4"`, `"postgres:next","mem_limit":"128m"`))
-	before := string(plan.Execution.Compose)
-	if err := validateResourcePaths(plan.Execution); err != nil {
+	original := string(plan.Compose)
+	plan.Compose = json.RawMessage(strings.ReplaceAll(original, `"mysql:8.4"`, `"postgres:next","mem_limit":"128m"`))
+	before := string(plan.Compose)
+	if err := ValidatePaths(plan); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -269,14 +284,14 @@ func TestSecretResolutionPreservesUnresolvedPlanAndDynamicComposeFields(t *testi
 	if err := os.MkdirAll(resourceDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadSecrets(resourceDir, plan.Execution.Secrets); err != nil {
+	if _, err := loadSecrets(resourceDir, plan.Secrets); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := resolveExecution(*plan.Execution, dir)
+	resolved, err := resolveExecution(*plan, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(plan.Execution.Compose) != before || !strings.Contains(plan.Execution.Runtime.Env["DB_PASSWORD"], "{{secret:") {
+	if string(plan.Compose) != before || !strings.Contains(plan.Runtime.Env["DB_PASSWORD"], "{{secret:") {
 		t.Fatal("secret resolution mutated the reusable wire plan")
 	}
 	if !strings.Contains(string(resolved.Compose), `"mem_limit":"128m"`) || strings.Contains(string(resolved.Compose), "{{secret:") {
@@ -289,7 +304,7 @@ func TestCleanupDoesNotSilentlyIgnoreUntrackedRetainedResources(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "resources", "project"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := NewDockerManager().DeleteResources(context.Background(), "project", dir); err == nil {
+	if err := (&Executor{DockerBin: "docker", StateDir: dir}).Delete(context.Background(), "project"); err == nil {
 		t.Fatal("retained resources without cleanup intent were reported as deleted")
 	}
 }

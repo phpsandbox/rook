@@ -9,13 +9,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 type DockerManager struct {
-	resourcesMu sync.Mutex
-	bin         string
+	bin string
 }
 
 func NewDockerManager() *DockerManager {

@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/phpsandbox/rook/internal/agent"
+	"github.com/phpsandbox/rook/internal/resources"
 )
 
 var version = "dev"
@@ -45,12 +46,16 @@ func run(ctx context.Context, cfg agent.Config) error {
 		return fmt.Errorf("prerequisite check failed: %w", err)
 	}
 
+	executor := &resources.Executor{DockerBin: "docker", StateDir: cfg.StateDir}
+	if err := executor.CheckPrerequisites(ctx); err != nil {
+		return fmt.Errorf("resource prerequisite check failed: %w", err)
+	}
 	state := agent.NewStateStore(cfg.StateDir)
 	if err := state.Load(); err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
 
-	deployer := agent.NewDeployer(docker, state)
+	deployer := agent.NewDeployer(docker, state, executor)
 	proxy := agent.NewProxy(state)
 	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token)
 	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token)
@@ -99,7 +104,7 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 		Type:         "hello",
 		ServerID:     serverID,
 		Version:      version,
-		Capabilities: []string{agent.ResourceExecutionCapability},
+		Capabilities: []string{resources.ExecutionCapability},
 		Deployments:  deployments,
 	})
 }

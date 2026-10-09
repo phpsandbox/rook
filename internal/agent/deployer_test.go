@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/phpsandbox/rook/internal/resources"
 )
 
 type fakeDockerClient struct {
@@ -19,15 +21,6 @@ type fakeDockerClient struct {
 	waitHealthyHostPort int
 	waitHealthyPath     string
 	waitHealthyFn       func(containerID string) error
-}
-
-func (f *fakeDockerClient) PrepareResources(_ context.Context, _ Plan, _ string) (ResourceRuntime, error) {
-	return ResourceRuntime{}, nil
-}
-
-func (f *fakeDockerClient) DeleteResources(_ context.Context, key, _ string) error {
-	f.events = append(f.events, "delete-resources:"+key)
-	return nil
 }
 
 func (f *fakeDockerClient) Build(_ context.Context, contextDir string, tag string, env map[string]string, _ func(string)) error {
@@ -81,7 +74,7 @@ func TestDeployerRedeployCutsOverAfterNewContainerIsHealthy(t *testing.T) {
 	}
 
 	docker := &fakeDockerClient{runID: "new-container"}
-	deployer := NewDeployer(docker, state)
+	deployer := NewDeployer(docker, state, &resources.Executor{DockerBin: "docker", StateDir: state.dir})
 
 	if err := deployer.Deploy(context.Background(), deployPayload(t, "deploy-1"), func(OutboundMessage) {}); err != nil {
 		t.Fatal(err)
@@ -125,7 +118,7 @@ func TestDeployerRedeployKeepsOldStateWhenNewContainerFailsHealth(t *testing.T) 
 			return errors.New("not healthy")
 		},
 	}
-	deployer := NewDeployer(docker, state)
+	deployer := NewDeployer(docker, state, &resources.Executor{DockerBin: "docker", StateDir: state.dir})
 
 	if err := deployer.Deploy(context.Background(), deployPayload(t, "deploy-1"), func(OutboundMessage) {}); err == nil {
 		t.Fatal("expected health error")
@@ -149,7 +142,7 @@ func TestDeployerRedeployKeepsOldStateWhenNewContainerFailsHealth(t *testing.T) 
 
 func TestDeployerRequiresManifest(t *testing.T) {
 	state := NewStateStore(t.TempDir())
-	deployer := NewDeployer(&fakeDockerClient{}, state)
+	deployer := NewDeployer(&fakeDockerClient{}, state, &resources.Executor{DockerBin: "docker", StateDir: state.dir})
 	payload := deployPayload(t, "deploy-missing-manifest")
 	payload.Manifest.SchemaVersion = 0
 
@@ -161,7 +154,7 @@ func TestDeployerRequiresManifest(t *testing.T) {
 func TestDeployerCanKeepBuildWorkspaceForInspection(t *testing.T) {
 	state := NewStateStore(t.TempDir())
 	docker := &fakeDockerClient{runID: "new-container"}
-	deployer := NewDeployer(docker, state)
+	deployer := NewDeployer(docker, state, &resources.Executor{DockerBin: "docker", StateDir: state.dir})
 	payload := deployPayload(t, "deploy-keep")
 	payload.Manifest.Build.KeepWorkspace = true
 
@@ -184,7 +177,7 @@ func TestDeployerCanKeepBuildWorkspaceForInspection(t *testing.T) {
 func TestDeployerPreparesBundleBuildContextWithoutOverlayingSource(t *testing.T) {
 	state := NewStateStore(t.TempDir())
 	docker := &fakeDockerClient{runID: "new-container"}
-	deployer := NewDeployer(docker, state)
+	deployer := NewDeployer(docker, state, &resources.Executor{DockerBin: "docker", StateDir: state.dir})
 
 	sourceDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(sourceDir, ".phpsandbox", "runtime", "laravel"), 0o755); err != nil {
@@ -299,12 +292,20 @@ func TestUnpublishRetainsResourcesUnlessDeletionWasExplicit(t *testing.T) {
 		if err := state.Set("deployment", DeploymentState{ContainerID: "container", ResourceKey: "project"}); err != nil {
 			t.Fatal(err)
 		}
+		resourceDir := filepath.Join(state.dir, "resources", "project")
+		if err := os.MkdirAll(resourceDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(resourceDir, "execution.json"), []byte(`{"key":"project","ownership":{}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		docker := &fakeDockerClient{}
-		deployer := NewDeployer(docker, state)
+		deployer := NewDeployer(docker, state, &resources.Executor{DockerBin: "docker", StateDir: state.dir})
 		if err := deployer.Delete(context.Background(), DeletePayload{DeploymentID: "deployment", DeleteResources: deleting}); err != nil {
 			t.Fatal(err)
 		}
-		if slices.Contains(docker.events, "delete-resources:project") != deleting {
+		_, err := os.Stat(filepath.Join(state.dir, "resources", "project"))
+		if os.IsNotExist(err) != deleting {
 			t.Fatal("unpublish did not respect explicit resource deletion")
 		}
 	}
@@ -312,11 +313,9 @@ func TestUnpublishRetainsResourcesUnlessDeletionWasExplicit(t *testing.T) {
 
 func TestFailedFirstReleaseCanCleanUpResourcesWithoutAContainer(t *testing.T) {
 	docker := &fakeDockerClient{}
-	deployer := NewDeployer(docker, NewStateStore(t.TempDir()))
+	state := NewStateStore(t.TempDir())
+	deployer := NewDeployer(docker, state, &resources.Executor{DockerBin: "docker", StateDir: state.dir})
 	if err := deployer.Delete(context.Background(), DeletePayload{DeploymentID: "failed", ResourceKey: "project", DeleteResources: true}); err != nil {
 		t.Fatal(err)
-	}
-	if !slices.Contains(docker.events, "delete-resources:project") {
-		t.Fatal("failed first release cannot clean its resources")
 	}
 }

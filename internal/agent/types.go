@@ -1,5 +1,7 @@
 package agent
 
+import "github.com/phpsandbox/rook/internal/resources"
+
 const (
 	StrategyLaravel = "laravel"
 
@@ -24,6 +26,6 @@ type RuntimePlan struct {
 }
 
 type Plan struct {
-	Runtime   RuntimePlan        `json:"runtime" msgpack:"runtime"`
-	Execution *ResourceExecution `json:"execution,omitempty" msgpack:"execution,omitempty"`
+	Runtime   RuntimePlan     `json:"runtime" msgpack:"runtime"`
+	Execution *resources.Plan `json:"execution,omitempty" msgpack:"execution,omitempty"`
 }

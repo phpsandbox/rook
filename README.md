@@ -6,6 +6,9 @@ It is intentionally small and stable. The agent connects a registered server to 
 
 Rook stays focused on durable server-side primitives that can run for a long time with minimal updates.
 
+The resource execution boundary and first-release contract are documented in
+[Resource execution](docs/resource-execution.md).
+
 ## Development
 
 ```bash
@@ -25,7 +28,9 @@ state_dir: ".rook/state"
 ## Install
 
 Rook supports Linux on AMD64 and ARM64. The host must use systemd and have a
-running Docker daemon plus either `curl` or `wget`.
+running Docker daemon, the Docker Compose plugin with `up --wait`,
+`--wait-timeout`, and `down --remove-orphans`, plus either `curl` or `wget`.
+Installation and agent startup verify these prerequisites before connecting.
 
 > [!WARNING]
 > Rook belongs to the Docker group and executes deployment instructions received

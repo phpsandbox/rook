@@ -81,6 +81,18 @@ check_docker() {
   if ! docker info >/dev/null 2>&1; then
     err "docker daemon is not running or is not accessible"
   fi
+  if ! docker compose version >/dev/null 2>&1; then
+    err "the Docker Compose plugin is required"
+  fi
+  local compose_help
+  compose_help="$(docker compose up --help)" || err "cannot inspect Docker Compose up support"
+  if ! grep -Eq -- '(^|[[:space:],])--wait([[:space:],]|$)' <<<"$compose_help" || ! grep -Fq -- '--wait-timeout' <<<"$compose_help"; then
+    err "Docker Compose must support up --wait and --wait-timeout; update the Compose plugin"
+  fi
+  compose_help="$(docker compose down --help)" || err "cannot inspect Docker Compose down support"
+  if ! grep -Fq -- '--remove-orphans' <<<"$compose_help"; then
+    err "Docker Compose must support down --remove-orphans"
+  fi
 }
 
 download() {
