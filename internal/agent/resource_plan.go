@@ -45,10 +45,3 @@ type ComposeNetwork struct {
 type ComposeVolume struct {
 	Name string `json:"name" msgpack:"name"`
 }
-
-func resourceKey(plan *ResourceExecution) string {
-	if plan == nil {
-		return ""
-	}
-	return plan.Key
-}

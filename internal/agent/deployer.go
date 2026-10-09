@@ -152,9 +152,13 @@ func (d *Deployer) Deploy(ctx context.Context, payload DeployPayload, send func(
 		return fmt.Errorf("container health check: %w", err)
 	}
 
+	resourceKey := ""
+	if payload.Plan.Execution != nil {
+		resourceKey = payload.Plan.Execution.Key
+	}
 	routeKey := fmt.Sprintf("deploy--%s", payload.DeploymentID)
 	if err := d.state.Set(payload.DeploymentID, DeploymentState{
-		ResourceKey: resourceKey(payload.Plan.Execution),
+		ResourceKey: resourceKey,
 		ContainerID: containerID,
 		Port:        port,
 		ImageRef:    imageTag,
