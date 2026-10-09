@@ -368,18 +368,6 @@ func validateInboundRelayFrame(frame RelayFrame) error {
 
 	switch frame.Type {
 	case RelayFrameOpen:
-		if frame.DeploymentID == "" {
-			return fmt.Errorf("deploymentId is required")
-		}
-		if frame.Method == "" {
-			return fmt.Errorf("method is required")
-		}
-		if frame.Path == "" {
-			return fmt.Errorf("path is required")
-		}
-		if frame.HasBody == nil {
-			return fmt.Errorf("hasBody is required")
-		}
 	case RelayFrameData:
 	case RelayFrameEnd:
 	case RelayFrameReset:
