@@ -14,11 +14,12 @@ A `host` command carries `payload.id`, `payload.action`, and the fields used by 
 
 - `exec`: argv, working directory, environment, stdin, optional timeout in seconds. Output is streamed and retained in a bounded private result. Rook starts a process directly; shell execution requires an explicitly supplied shell argv.
 - `write`, `read`, `remove`, `archive`: private atomic file writes, byte reads, recursive removal, and tar.gz extraction. Archive paths cannot escape their destination. `executable` selects private executable permissions for a written file.
-- `secrets`: ensure named secrets exist in private local scopes. `resolveSecrets` explicitly substitutes `{{secret:scope:name}}` in command arguments, environment, stdin, or written content. Secrets persist between releases. Ordinary state writes preserve references without resolving them.
 - `binding.read`, `binding.set`, `binding.remove`: persist and inspect a named port binding with opaque caller metadata. Rook does not interpret release or resource fields in that metadata. The proxy follows the binding's host port. Switching the binding does not stop either process; Okra decides when to retire a previous release.
 - `info`: report the host state directory so Okra can resolve paths.
 
 Fields have matching JSON and MessagePack names. File bytes use JSON base64 or native MessagePack bytes. `host.status` reads the persisted result for a payload ID without executing its operation.
+
+Core encrypts resource-owned credentials. Okra generates and retrieves them, resolves references, and supplies values in commands and private Compose files. Rook has no secret store or reference resolver. Unpublishing retains credentials; Core removes them only after successful resource cleanup.
 
 ## Operation outcomes
 
@@ -36,7 +37,7 @@ The installer checks the publishing host prerequisites. The generic agent can co
 
 ## Validation and evolution
 
-Rook tests cover private storage, secret resolution, operation replay/restart outcomes, archive containment, and traffic bindings. Okra's separate-consumer tests launch a built Rook binary over control/data WebSockets and send JSON/MessagePack host requests; Docker tests cover release replacement, unpublish/cleanup, resource omission/release, and shared MySQL allocations.
+Rook tests cover private writes of supplied values, operation replay/restart outcomes, archive containment, and traffic bindings. Okra's separate-consumer tests launch a built Rook binary over control/data WebSockets and send JSON/MessagePack host requests; Docker tests cover release replacement, unpublish/cleanup, resource omission/release, and shared MySQL allocations.
 
 Run the consumer tests with `ROOK_BINARY=/absolute/path/to/rook ROOK_DOCKER_TEST=1 go test ./internal/deployment/sshagent -run TestSeparateRook` from Okra's Go module. The binary is an independent consumer input, not an import of Rook internals.
 

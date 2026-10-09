@@ -99,14 +99,7 @@ func (e *Executor) Execute(ctx context.Context, request Request, onOutput func(s
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
 		defer cancel()
 	}
-	err = nil
-	resolved := request
-	if request.ResolveSecrets {
-		resolved, err = e.resolve(request)
-	}
-	if err == nil {
-		result.Output, result.Data, err = e.apply(ctx, resolved, onOutput)
-	}
+	result.Output, result.Data, err = e.apply(ctx, request, onOutput)
 	if err != nil {
 		result.Status = "failed"
 		result.Error = err.Error()
@@ -177,13 +170,6 @@ func (e *Executor) apply(ctx context.Context, r Request, onOutput func(string)) 
 		return "", nil, os.RemoveAll(r.Path)
 	case "archive":
 		return "", nil, extractTarGzip(r.Path, r.Data)
-	case "secrets":
-		for scope, names := range r.Secrets {
-			if err := e.ensureSecrets(scope, names); err != nil {
-				return "", nil, err
-			}
-		}
-		return "", nil, nil
 	default:
 		return "", nil, fmt.Errorf("unsupported host action %q", r.Action)
 	}

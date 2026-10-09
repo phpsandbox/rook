@@ -45,24 +45,18 @@ func TestExecutionReplayAndRestartNeverRepeatEffects(t *testing.T) {
 		t.Fatalf("%+v %v", interrupted, err)
 	}
 }
-func TestPrivateSecretReferencesPersistAndResolveWithoutSavingRequest(t *testing.T) {
+func TestPrivateSuppliedValuesAreWrittenWithoutSavingRequest(t *testing.T) {
 	dir := t.TempDir()
 	e := &Executor{Directory: dir}
-	if result, err := e.Execute(context.Background(), Request{ID: "ensure", Action: "secrets", Secrets: map[string][]string{"service": {"password"}}}, nil); err != nil || result.Status != "completed" {
-		t.Fatalf("%+v %v", result, err)
-	}
-	secrets, err := loadSecrets(filepath.Join(dir, "secrets", "service"), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join(dir, "private.json")
-	request := Request{ID: "write", Action: "write", Path: path, Data: []byte(`{"password":"{{secret:service:password}}"}`), ResolveSecrets: true}
+	value := "supplied-credential"
+	request := Request{ID: "write", Action: "write", Path: path, Data: []byte(`{"password":"` + value + `"}`)}
 	if result, err := e.Execute(context.Background(), request, nil); err != nil || result.Status != "completed" {
 		t.Fatalf("%+v %v", result, err)
 	}
 	content, _ := os.ReadFile(path)
-	if !strings.Contains(string(content), secrets["password"]) {
-		t.Fatal("file secret reference unresolved")
+	if !strings.Contains(string(content), value) {
+		t.Fatal("supplied value missing")
 	}
 	info, _ := os.Stat(path)
 	if info.Mode().Perm() != 0600 {
@@ -70,18 +64,8 @@ func TestPrivateSecretReferencesPersistAndResolveWithoutSavingRequest(t *testing
 	}
 	resultPath, _ := e.operationPath("write")
 	record, _ := os.ReadFile(resultPath)
-	if strings.Contains(string(record), secrets["password"]) {
+	if strings.Contains(string(record), value) {
 		t.Fatal("credential saved in operation journal")
-	}
-	request.ID = "literal"
-	request.ResolveSecrets = false
-	request.Path = filepath.Join(dir, "state.json")
-	if _, err := e.Execute(context.Background(), request, nil); err != nil {
-		t.Fatal(err)
-	}
-	content, _ = os.ReadFile(request.Path)
-	if !strings.Contains(string(content), "{{secret:") {
-		t.Fatal("state lost secret references")
 	}
 }
 func TestBindingsPersistAtomicSwitchAndRemoval(t *testing.T) {
