@@ -368,9 +368,6 @@ func validateInboundRelayFrame(frame RelayFrame) error {
 	case RelayFrameData:
 	case RelayFrameEnd:
 	case RelayFrameReset:
-		if frame.Error == "" {
-			return fmt.Errorf("reset error is required")
-		}
 	default:
 		return fmt.Errorf("unsupported relay frame type %q", frame.Type)
 	}
