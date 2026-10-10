@@ -93,11 +93,6 @@ func (m *RelayManager) handleOpen(ctx context.Context, frame RelayFrame) {
 }
 
 func (m *RelayManager) handleHTTPOpen(ctx context.Context, frame RelayFrame) {
-	if frame.DeploymentID == "" {
-		m.sendReset(ctx, frame.StreamID, frame.Kind, fmt.Errorf("deploymentId is required"))
-		return
-	}
-
 	var body io.Reader = http.NoBody
 	if relayFrameHasBody(frame) {
 		reader, writer := io.Pipe()
@@ -116,16 +111,12 @@ func (m *RelayManager) handleHTTPOpen(ctx context.Context, frame RelayFrame) {
 }
 
 func (m *RelayManager) handleWebSocketOpen(ctx context.Context, frame RelayFrame) {
-	if frame.DeploymentID == "" {
-		m.sendReset(ctx, frame.StreamID, frame.Kind, fmt.Errorf("deploymentId is required"))
-		return
-	}
 	if relayFrameHasBody(frame) {
 		m.sendReset(ctx, frame.StreamID, frame.Kind, fmt.Errorf("websocket upgrade must not include a request body"))
 		return
 	}
 
-	targetURL, err := m.proxy.WebSocketURL(frame.DeploymentID, nonEmptyPath(frame.Path))
+	targetURL, err := m.proxy.WebSocketURL(frame.DeploymentID, frame.Path)
 	if err != nil {
 		m.sendReset(ctx, frame.StreamID, frame.Kind, err)
 		return
@@ -204,9 +195,6 @@ func (m *RelayManager) handleEnd(frame RelayFrame) {
 
 func (m *RelayManager) handleReset(frame RelayFrame) {
 	message := frame.Error
-	if message == "" {
-		message = "stream reset"
-	}
 	if stream := m.removeHTTP(frame.StreamID); stream != nil {
 		_ = stream.writer.CloseWithError(fmt.Errorf("%s", message))
 		return
@@ -217,7 +205,7 @@ func (m *RelayManager) handleReset(frame RelayFrame) {
 func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, body io.Reader) {
 	defer m.removeHTTP(frame.StreamID)
 
-	resp, err := m.proxy.OpenHTTP(ctx, frame.DeploymentID, nonEmptyMethod(frame.Method), nonEmptyPath(frame.Path), frame.Headers, body)
+	resp, err := m.proxy.OpenHTTP(ctx, frame.DeploymentID, frame.Method, frame.Path, frame.Headers, body)
 	if err != nil {
 		m.sendReset(ctx, frame.StreamID, RelayKindHTTP, err)
 		return
@@ -367,26 +355,9 @@ func responseHeaderPairs(headers map[string][]string) []HeaderPair {
 	return pairs
 }
 
-func nonEmptyMethod(method string) string {
-	if strings.TrimSpace(method) == "" {
-		return http.MethodGet
-	}
-	return method
-}
-
-func nonEmptyPath(path string) string {
-	if strings.TrimSpace(path) == "" {
-		return "/"
-	}
-	return path
-}
-
 func validateInboundRelayFrame(frame RelayFrame) error {
 	if frame.Protocol != RelayProtocol {
 		return fmt.Errorf("unsupported relay protocol %q", frame.Protocol)
-	}
-	if strings.TrimSpace(frame.StreamID) == "" {
-		return fmt.Errorf("streamId is required")
 	}
 	if frame.Kind != RelayKindHTTP {
 		return fmt.Errorf("unsupported relay stream kind %q", frame.Kind)
@@ -394,24 +365,9 @@ func validateInboundRelayFrame(frame RelayFrame) error {
 
 	switch frame.Type {
 	case RelayFrameOpen:
-		if strings.TrimSpace(frame.DeploymentID) == "" {
-			return fmt.Errorf("deploymentId is required")
-		}
-		if strings.TrimSpace(frame.Method) == "" {
-			return fmt.Errorf("method is required")
-		}
-		if strings.TrimSpace(frame.Path) == "" {
-			return fmt.Errorf("path is required")
-		}
-		if frame.HasBody == nil {
-			return fmt.Errorf("hasBody is required")
-		}
 	case RelayFrameData:
 	case RelayFrameEnd:
 	case RelayFrameReset:
-		if strings.TrimSpace(frame.Error) == "" {
-			return fmt.Errorf("reset error is required")
-		}
 	default:
 		return fmt.Errorf("unsupported relay frame type %q", frame.Type)
 	}

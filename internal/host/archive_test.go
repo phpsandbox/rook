@@ -1,25 +1,23 @@
-package agent
+package host
 
 import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-func TestApplyDeployBundleExtractsVerifiedRuntimeFiles(t *testing.T) {
+func TestHostArchiveExtractsVerifiedRuntimeFiles(t *testing.T) {
 	workspace := t.TempDir()
-	bundle := testDeployBundle(t, map[string]string{
+	bundle := testArchive(t, map[string]string{
 		"Dockerfile": "FROM scratch\n",
 		".phpsandbox/runtime/laravel/laravel-start.sh": "#!/bin/sh\n",
 		".phpsandbox/runtime/laravel/Caddyfile":        ":8000\n",
 	})
 
-	if err := ApplyDeployBundle(workspace, bundle); err != nil {
+	if err := extractTarGzip(workspace, bundle); err != nil {
 		t.Fatal(err)
 	}
 
@@ -32,30 +30,18 @@ func TestApplyDeployBundleExtractsVerifiedRuntimeFiles(t *testing.T) {
 	}
 }
 
-func TestApplyDeployBundleRejectsUnsafePaths(t *testing.T) {
+func TestHostArchiveRejectsUnsafePaths(t *testing.T) {
 	workspace := t.TempDir()
-	bundle := testDeployBundle(t, map[string]string{
+	bundle := testArchive(t, map[string]string{
 		"../escape": "nope",
 	})
 
-	if err := ApplyDeployBundle(workspace, bundle); err == nil {
+	if err := extractTarGzip(workspace, bundle); err == nil {
 		t.Fatal("expected unsafe path error")
 	}
 }
 
-func TestApplyDeployBundleRejectsChecksumMismatch(t *testing.T) {
-	workspace := t.TempDir()
-	bundle := testDeployBundle(t, map[string]string{
-		"Dockerfile": "FROM scratch\n",
-	})
-	bundle.SHA256 = "sha256:deadbeef"
-
-	if err := ApplyDeployBundle(workspace, bundle); err == nil {
-		t.Fatal("expected checksum mismatch")
-	}
-}
-
-func testDeployBundle(t *testing.T, files map[string]string) DeployBundle {
+func testArchive(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 
 	var payload bytes.Buffer
@@ -81,12 +67,5 @@ func testDeployBundle(t *testing.T, files map[string]string) DeployBundle {
 		t.Fatal(err)
 	}
 
-	data := payload.Bytes()
-	sum := sha256.Sum256(data)
-	return DeployBundle{
-		Format: "tar.gz",
-		Size:   int64(len(data)),
-		SHA256: "sha256:" + hex.EncodeToString(sum[:]),
-		Data:   data,
-	}
+	return payload.Bytes()
 }

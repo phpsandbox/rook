@@ -3,7 +3,6 @@ package agent
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -11,8 +10,6 @@ import (
 const (
 	DefaultConfigPath = "/etc/rook/rook.yaml"
 	DefaultStateDir   = "/var/lib/rook/state"
-	PortRangeStart    = 10000
-	PortRangeEnd      = 32767
 )
 
 type Config struct {
@@ -23,10 +20,6 @@ type Config struct {
 }
 
 func LoadConfig(path string) (Config, error) {
-	if strings.TrimSpace(path) == "" {
-		path = DefaultConfigPath
-	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read agent config: %w", err)

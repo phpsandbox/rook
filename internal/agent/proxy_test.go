@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"github.com/phpsandbox/rook/internal/host"
 	"io"
 	"net"
 	"net/http"
@@ -43,8 +44,8 @@ func TestProxyOpenHTTPPreservesHeaderPairsAndBinaryBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	state := NewStateStore(t.TempDir())
-	if err := state.Set("deployment-1", DeploymentState{ContainerID: "container-1", Port: port}); err != nil {
+	state := host.NewBindings(t.TempDir())
+	if err := state.Set("deployment-1", host.Binding{Port: port}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,5 +76,40 @@ func TestProxyOpenHTTPPreservesHeaderPairsAndBinaryBody(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !bytes.Equal(body, []byte{5, 6, 7, 255}) {
 		t.Fatalf("response body = %#v", body)
+	}
+}
+
+func TestProxyOpenHTTPReturnsRedirectToBrowser(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/weather" {
+			t.Fatalf("proxy followed redirect to %s", r.URL.Path)
+		}
+		w.Header().Add("Set-Cookie", "session=updated; Path=/; HttpOnly")
+		http.Redirect(w, r, "/result", http.StatusSeeOther)
+	}))
+	defer server.Close()
+
+	_, portString, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := host.NewBindings(t.TempDir())
+	if err := state.Set("deployment-1", host.Binding{Port: port}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := NewProxy(state).OpenHTTP(context.Background(), "deployment-1", http.MethodPost, "/weather", nil, strings.NewReader("city=Berlin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/result" {
+		t.Fatalf("redirect = %d %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if resp.Header.Get("Set-Cookie") != "session=updated; Path=/; HttpOnly" {
+		t.Fatal("redirect session cookie was lost")
 	}
 }

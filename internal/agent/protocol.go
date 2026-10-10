@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"github.com/phpsandbox/rook/internal/host"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -13,48 +14,12 @@ type InboundMessage struct {
 	messagePackPayload msgpack.RawMessage
 }
 
-func (m InboundMessage) DecodeDeployPayload() (DeployPayload, error) {
-	var payload DeployPayload
+func (m InboundMessage) DecodeHostRequest() (host.Request, error) {
+	var request host.Request
 	if len(m.Payload) > 0 {
-		return payload, json.Unmarshal(m.Payload, &payload)
+		return request, json.Unmarshal(m.Payload, &request)
 	}
-	if len(m.messagePackPayload) > 0 {
-		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
-	}
-	return payload, nil
-}
-
-func (m InboundMessage) DecodeStopPayload() (StopPayload, error) {
-	var payload StopPayload
-	if len(m.Payload) > 0 {
-		return payload, json.Unmarshal(m.Payload, &payload)
-	}
-	if len(m.messagePackPayload) > 0 {
-		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
-	}
-	return payload, nil
-}
-
-func (m InboundMessage) DecodeDeletePayload() (DeletePayload, error) {
-	var payload DeletePayload
-	if len(m.Payload) > 0 {
-		return payload, json.Unmarshal(m.Payload, &payload)
-	}
-	if len(m.messagePackPayload) > 0 {
-		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
-	}
-	return payload, nil
-}
-
-func (m InboundMessage) DecodeLogsTailPayload() (LogsTailPayload, error) {
-	var payload LogsTailPayload
-	if len(m.Payload) > 0 {
-		return payload, json.Unmarshal(m.Payload, &payload)
-	}
-	if len(m.messagePackPayload) > 0 {
-		return payload, msgpack.Unmarshal(m.messagePackPayload, &payload)
-	}
-	return payload, nil
+	return request, msgpack.Unmarshal(m.messagePackPayload, &request)
 }
 
 type OutboundMessage struct {
@@ -67,73 +32,14 @@ type OutboundMessage struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 	Deployments  []string `json:"deployments,omitempty"`
 
-	// heartbeat
-	Resources *ResourceInfo `json:"resources,omitempty"`
-
 	// log
 	Stream  string `json:"stream,omitempty"`
 	Content string `json:"content,omitempty"`
-
-	// phase
-	Phase string           `json:"phase,omitempty"`
-	Data  *DeployPhaseData `json:"data,omitempty"`
 
 	// result
 	Success bool            `json:"success,omitempty"`
 	Error   string          `json:"error,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
-}
-
-type ResourceInfo struct {
-	CPUPercent    float64 `json:"cpuPercent"`
-	MemoryUsedMB  int64   `json:"memoryUsedMb"`
-	MemoryTotalMB int64   `json:"memoryTotalMb"`
-	DiskUsedGB    int64   `json:"diskUsedGb"`
-	DiskTotalGB   int64   `json:"diskTotalGb"`
-}
-
-type DeployPayload struct {
-	DeploymentID string            `json:"deploymentId" msgpack:"deploymentId"`
-	Source       SourceRef         `json:"source" msgpack:"source"`
-	Manifest     DeployManifest    `json:"manifest" msgpack:"manifest"`
-	Plan         Plan              `json:"plan" msgpack:"plan"`
-	Bundle       *DeployBundle     `json:"bundle,omitempty" msgpack:"bundle,omitempty"`
-	Env          map[string]string `json:"env" msgpack:"env"`
-}
-
-type DeployManifest struct {
-	SchemaVersion int                 `json:"schemaVersion" msgpack:"schemaVersion"`
-	Build         DeployManifestBuild `json:"build" msgpack:"build"`
-}
-
-type DeployManifestBuild struct {
-	KeepWorkspace bool `json:"keepWorkspace" msgpack:"keepWorkspace"`
-}
-
-type DeployPhaseData struct {
-	Port        int    `json:"port"`
-	ContainerID string `json:"containerId"`
-}
-
-type DeployBundle struct {
-	Format string `json:"format" msgpack:"format"`
-	Layout string `json:"layout,omitempty" msgpack:"layout,omitempty"`
-	Size   int64  `json:"size" msgpack:"size"`
-	SHA256 string `json:"sha256" msgpack:"sha256"`
-	Data   []byte `json:"data" msgpack:"data"`
-}
-
-type StopPayload struct {
-	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
-}
-
-type DeletePayload struct {
-	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
-}
-
-type LogsTailPayload struct {
-	DeploymentID string `json:"deploymentId" msgpack:"deploymentId"`
-	Lines        int    `json:"lines" msgpack:"lines"`
 }
 
 type HeaderPair [2]string

@@ -36,6 +36,7 @@ func (c *WSClient) Connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connect to control plane: %w", err)
 	}
+	conn.SetReadLimit(24 << 20)
 	c.conn = conn
 	return nil
 }

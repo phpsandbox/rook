@@ -3,16 +3,17 @@ package agent
 import (
 	"context"
 	"fmt"
+	"github.com/phpsandbox/rook/internal/host"
 	"io"
 	"net/http"
 	"strings"
 )
 
 type Proxy struct {
-	state *StateStore
+	state *host.Bindings
 }
 
-func NewProxy(state *StateStore) *Proxy {
+func NewProxy(state *host.Bindings) *Proxy {
 	return &Proxy{state: state}
 }
 
@@ -46,7 +47,12 @@ func (p *Proxy) OpenHTTP(ctx context.Context, deploymentID string, method string
 		req.Header.Add(name, value)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("proxy request failed: %w", err)
 	}
