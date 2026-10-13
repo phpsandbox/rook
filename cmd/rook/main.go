@@ -156,7 +156,7 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 	var result host.Result
 	switch msg.Type {
 	case "host":
-		result, err = executor.Execute(ctx, request, func(output string) { send(agent.OutboundMessage{Type: "log", Stream: "host", Content: output}) })
+		result, err = executeHostCommand(ctx, executor, request, send)
 	case "host.status":
 		result, err = executor.Status(request.ID)
 	default:
@@ -172,4 +172,23 @@ func handleCommand(ctx context.Context, msg agent.InboundMessage, ws *agent.WSCl
 		return
 	}
 	send(agent.OutboundMessage{Type: "result", Success: result.Status == "completed", Error: result.Error, Result: data})
+}
+
+func executeHostCommand(ctx context.Context, executor *host.Executor, request host.Request, send func(agent.OutboundMessage)) (host.Result, error) {
+	// Delivery is best effort. A disconnected or slow control plane must never
+	// prevent command pipes from draining and the terminal record from saving.
+	logs := make(chan string, 128)
+	go func() {
+		for output := range logs {
+			send(agent.OutboundMessage{Type: "log", Stream: "host", Content: output})
+		}
+	}()
+	result, err := executor.Execute(ctx, request, func(output string) {
+		select {
+		case logs <- output:
+		default:
+		}
+	})
+	close(logs)
+	return result, err
 }

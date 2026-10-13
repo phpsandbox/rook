@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/phpsandbox/rook/internal/host"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -56,5 +57,30 @@ func TestCorruptOperationStateNeverConnects(t *testing.T) {
 	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir})
 	if err == nil || !strings.Contains(err.Error(), "recover operations") || requests.Load() != 0 {
 		t.Fatalf("corrupt host connected: %v, requests=%d", err, requests.Load())
+	}
+}
+
+func TestSlowLogDeliveryDoesNotDelayDurableTerminalRecord(t *testing.T) {
+	executor := &host.Executor{Directory: t.TempDir()}
+	blocked := make(chan struct{})
+	defer close(blocked)
+	done := make(chan host.Result, 1)
+	go func() {
+		result, err := executeHostCommand(context.Background(), executor, host.Request{
+			ID: "no-reader", Action: "exec", Command: []string{"sh", "-c", "printf output"},
+		}, func(agent.OutboundMessage) { <-blocked })
+		if err != nil {
+			t.Error(err)
+		}
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		saved, err := executor.Status("no-reader")
+		if err != nil || saved.Status != "completed" || result.Output != "output" {
+			t.Fatalf("result=%+v saved=%+v error=%v", result, saved, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("log delivery prevented terminal record")
 	}
 }

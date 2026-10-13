@@ -23,9 +23,6 @@ func NewWSClient(url, token string) *WSClient {
 }
 
 func (c *WSClient) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	opts := &websocket.DialOptions{
 		HTTPHeader: map[string][]string{
 			"Authorization": {"Bearer " + c.token},
@@ -37,17 +34,25 @@ func (c *WSClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("connect to control plane: %w", err)
 	}
 	conn.SetReadLimit(24 << 20)
+	c.mu.Lock()
+	previous := c.conn
 	c.conn = conn
+	c.mu.Unlock()
+	if previous != nil {
+		_ = previous.CloseNow()
+	}
 	return nil
 }
 
 func (c *WSClient) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.conn == nil {
+	conn := c.conn
+	c.conn = nil
+	c.mu.Unlock()
+	if conn == nil {
 		return nil
 	}
-	return c.conn.Close(websocket.StatusNormalClosure, "shutdown")
+	return conn.Close(websocket.StatusNormalClosure, "shutdown")
 }
 
 func (c *WSClient) Send(ctx context.Context, msg OutboundMessage) error {
@@ -56,9 +61,11 @@ func (c *WSClient) Send(ctx context.Context, msg OutboundMessage) error {
 		return fmt.Errorf("marshal outbound message: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	conn := c.conn
+	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -72,9 +79,11 @@ func (c *WSClient) SendRelayFrame(ctx context.Context, frame RelayFrame) error {
 		return fmt.Errorf("marshal outbound messagepack: %w", err)
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	conn := c.conn
+	c.mu.Unlock()
 	if conn == nil {
 		return fmt.Errorf("not connected")
 	}
