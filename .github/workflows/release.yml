@@ -22,7 +22,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
+          check-latest: true
           cache: true
       - name: Verify source
         run: |
@@ -30,6 +31,7 @@ jobs:
           go vet ./...
           go test ./...
           bash -n scripts/install.sh
+          go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -39,6 +41,7 @@ jobs:
           mkdir -p dist
           asset="rook-${GOOS}-${GOARCH}"
           go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${asset}" ./cmd/rook
+          env -u GOOS -u GOARCH go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "dist/${asset}"
           (cd dist && sha256sum "${asset}" > "${asset}.sha256")
       - uses: softprops/action-gh-release@v3
         with:

@@ -2,19 +2,54 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/phpsandbox/rook/internal/host"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/phpsandbox/rook/internal/host"
 )
 
+const maxConcurrentHTTPRequests = 64
+const maxQueuedHTTPRequests = 1024
+
+var errHTTPRelayOverloaded = errors.New("HTTP relay at capacity")
+
 type Proxy struct {
-	state *host.Bindings
+	state           *host.Bindings
+	client          *http.Client
+	webSocketClient *http.Client
+	requests        chan struct{}
+	waiting         chan struct{}
 }
 
 func NewProxy(state *host.Bindings) *Proxy {
-	return &Proxy{state: state}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 256
+	transport.MaxIdleConnsPerHost = maxConcurrentHTTPRequests
+	transport.MaxConnsPerHost = maxConcurrentHTTPRequests
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	webSocketTransport := transport.Clone()
+	// WebSocket workers enforce their own limits, including pending handshakes.
+	// Their long-lived connections must not reserve HTTP transport slots.
+	webSocketTransport.MaxConnsPerHost = 0
+	return &Proxy{
+		state:    state,
+		requests: make(chan struct{}, maxConcurrentHTTPRequests),
+		waiting:  make(chan struct{}, maxQueuedHTTPRequests),
+		webSocketClient: &http.Client{Transport: webSocketTransport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
+		client: &http.Client{
+			Transport: transport,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+	}
 }
 
 func (p *Proxy) OpenHTTP(ctx context.Context, deploymentID string, method string, path string, headers []HeaderPair, body io.Reader) (*http.Response, error) {
@@ -47,16 +82,69 @@ func (p *Proxy) OpenHTTP(ctx context.Context, deploymentID string, method string
 		req.Header.Add(name, value)
 	}
 
-	client := &http.Client{
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	// Keep the slot until the caller closes the response, so large downloads
+	// cannot accumulate unbounded upstream socket buffers across deployments.
+	if err := p.acquire(ctx, body != http.NoBody); err != nil {
+		_ = req.Body.Close()
+		return nil, err
 	}
-	resp, err := client.Do(req)
+	resp, err := p.client.Do(req)
 	if err != nil {
+		<-p.requests
 		return nil, fmt.Errorf("proxy request failed: %w", err)
 	}
+	resp.Body = &proxyResponseBody{ReadCloser: resp.Body, release: func() { <-p.requests }}
 	return resp, nil
+}
+
+func (p *Proxy) acquire(ctx context.Context, hasBody bool) error {
+	if hasBody {
+		// The relay reads uploads through pipes on its shared receive loop.
+		// A queued upload would block that loop before active uploads can finish.
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case p.requests <- struct{}{}:
+			return nil
+		default:
+			return errHTTPRelayOverloaded
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case p.requests <- struct{}{}:
+		return nil
+	default:
+	}
+	// Bound the waiting population as well as the active upstream sockets.
+	select {
+	case p.waiting <- struct{}{}:
+	default:
+		return errHTTPRelayOverloaded
+	}
+	defer func() { <-p.waiting }()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case p.requests <- struct{}{}:
+		return nil
+	}
+}
+
+type proxyResponseBody struct {
+	io.ReadCloser
+	release func()
+	once    sync.Once
+	err     error
+}
+
+func (b *proxyResponseBody) Close() error {
+	b.once.Do(func() {
+		b.err = b.ReadCloser.Close()
+		b.release()
+	})
+	return b.err
 }
 
 func (p *Proxy) WebSocketURL(deploymentID string, path string) (string, error) {

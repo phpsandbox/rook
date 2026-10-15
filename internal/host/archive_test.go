@@ -69,3 +69,69 @@ func testArchive(t *testing.T, files map[string]string) []byte {
 
 	return payload.Bytes()
 }
+
+func TestHostArchiveRejectsExistingDirectorySymlinkEscape(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "victim"), []byte("original"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractTarGzip(workspace, testArchive(t, map[string]string{"link/victim": "replacement"})); err == nil {
+		t.Fatal("directory symlink escape accepted")
+	}
+	content, err := os.ReadFile(filepath.Join(outside, "victim"))
+	if err != nil || string(content) != "original" {
+		t.Fatalf("outside file changed: %q, %v", content, err)
+	}
+}
+
+func TestHostArchiveReplacesLinksWithoutChangingOutsideFiles(t *testing.T) {
+	for _, hardlink := range []bool{false, true} {
+		t.Run(map[bool]string{false: "symlink", true: "hardlink"}[hardlink], func(t *testing.T) {
+			base := t.TempDir()
+			workspace := filepath.Join(base, "workspace")
+			outside := filepath.Join(base, "victim")
+			if err := os.Mkdir(workspace, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(outside, []byte("original"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(workspace, "file")
+			link := os.Symlink
+			if hardlink {
+				link = os.Link
+			}
+			if err := link(outside, target); err != nil {
+				t.Fatal(err)
+			}
+			if err := extractTarGzip(workspace, testArchive(t, map[string]string{"file": "replacement"})); err != nil {
+				t.Fatal(err)
+			}
+			content, err := os.ReadFile(outside)
+			if err != nil || string(content) != "original" {
+				t.Fatalf("outside file changed: %q, %v", content, err)
+			}
+			content, err = os.ReadFile(target)
+			if err != nil || string(content) != "replacement" {
+				t.Fatalf("extracted file: %q, %v", content, err)
+			}
+		})
+	}
+}
+
+func TestHostArchiveCreatesDestinationAndReplacesExistingFiles(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "new", "workspace")
+	for _, content := range []string{"first", "second"} {
+		if err := extractTarGzip(workspace, testArchive(t, map[string]string{"nested/file": content})); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(workspace, "nested/file"))
+		if err != nil || string(got) != content {
+			t.Fatalf("content=%q, error=%v", got, err)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,14 @@ func extractTarGzip(destination string, payload []byte) error {
 		return fmt.Errorf("read host archive gzip: %w", err)
 	}
 	defer reader.Close()
+	if err := os.MkdirAll(destination, 0700); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(destination)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 
 	tarReader := tar.NewReader(reader)
 	for {
@@ -34,24 +43,22 @@ func extractTarGzip(destination string, payload []byte) error {
 		if err != nil {
 			return err
 		}
+		// Root resolves every component beneath the open directory, including
+		// symlinks swapped concurrently by a process in the workspace.
+		name, err := filepath.Rel(filepath.Clean(destination), target)
+		if err != nil {
+			return err
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+			if err := root.MkdirAll(name, os.FileMode(header.Mode).Perm()); err != nil {
 				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := root.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 				return err
 			}
-			file, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(file, tarReader); err != nil {
-				_ = file.Close()
-				return err
-			}
-			if err := file.Close(); err != nil {
+			if err := writeArchiveFile(root, name, tarReader, os.FileMode(header.Mode).Perm()); err != nil {
 				return err
 			}
 		default:
@@ -59,6 +66,29 @@ func extractTarGzip(destination string, payload []byte) error {
 		}
 	}
 	return nil
+}
+
+func writeArchiveFile(root *os.Root, name string, data io.Reader, mode os.FileMode) error {
+	// Replace the directory entry rather than truncating an existing inode.
+	// This also protects files outside the workspace reached by hardlinks.
+	temporary := filepath.Join(filepath.Dir(name), ".rook-archive-"+rand.Text())
+	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(temporary)
+	if _, err := io.Copy(file, data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return root.Rename(temporary, name)
 }
 
 func safeBundleTarget(destination string, name string) (string, error) {
