@@ -13,6 +13,7 @@ import (
 
 	"github.com/phpsandbox/rook/internal/agent"
 	"github.com/phpsandbox/rook/internal/host"
+	"github.com/phpsandbox/rook/internal/update"
 )
 
 var version = "dev"
@@ -20,10 +21,25 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", agent.DefaultConfigPath, "path to rook config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	autoUpdate := flag.Bool("auto-update", false, "opt into automatic patch updates (requires the systemd installer)")
+	applyUpdate := flag.Bool("apply-auto-update", false, "run the privileged systemd update helper")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(version)
+		return
+	}
+	if *applyUpdate {
+		if os.Geteuid() != 0 || *autoUpdate {
+			fmt.Fprintln(os.Stderr, "error: --apply-auto-update requires root and cannot be combined with --auto-update")
+			os.Exit(1)
+		}
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := update.NewUpdater().Apply(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -36,13 +52,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := run(ctx, cfg); err != nil {
+	if err := run(ctx, cfg, *autoUpdate); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, cfg agent.Config) error {
+func run(ctx context.Context, cfg agent.Config, autoUpdate bool) error {
 	state := host.NewBindings(cfg.StateDir)
 	if err := state.Load(); err != nil {
 		return fmt.Errorf("load bindings: %w", err)
@@ -55,6 +71,14 @@ func run(ctx context.Context, cfg agent.Config) error {
 	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token, cfg.AllowInsecureControlPlane)
 	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token, cfg.AllowInsecureControlPlane)
 	relay := agent.NewRelayManager(proxy, dataWS)
+	coordinator := update.NewCoordinator(version, relay.Drain, relay.Resume)
+	if autoUpdate {
+		closeUpdates, err := coordinator.Serve(ctx, update.SocketPath)
+		if err != nil {
+			return err
+		}
+		defer closeUpdates()
+	}
 
 	fmt.Printf("rook %s connecting to %s (server: %s)\n", version, cfg.ControlPlane, cfg.ServerID)
 
@@ -71,14 +95,17 @@ func run(ctx context.Context, cfg agent.Config) error {
 	if err := sendHello(ctx, controlWS, cfg.ServerID, state.IDs()); err != nil {
 		return fmt.Errorf("send hello: %w", err)
 	}
+	coordinator.ControlReady(true)
+	coordinator.DataReady(true)
 
 	fmt.Println("connected, waiting for commands...")
 
-	go runRelayLoop(ctx, dataWS, relay)
+	go runRelayLoop(ctx, dataWS, relay, coordinator)
 
 	for {
 		msg, err := controlWS.Read(ctx)
 		if err != nil {
+			coordinator.ControlReady(false)
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -86,11 +113,23 @@ func run(ctx context.Context, cfg agent.Config) error {
 			if err := controlWS.ConnectWithRetry(ctx); err != nil {
 				return err
 			}
-			_ = sendHello(ctx, controlWS, cfg.ServerID, state.IDs())
+			if err := sendHello(ctx, controlWS, cfg.ServerID, state.IDs()); err != nil {
+				return fmt.Errorf("send reconnect hello: %w", err)
+			}
+			coordinator.ControlReady(true)
 			continue
 		}
 
-		go handleCommand(ctx, msg, controlWS, executor)
+		if !coordinator.BeginCommand() {
+			deliveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			_ = controlWS.Send(deliveryCtx, agent.OutboundMessage{Type: "result", CommandID: msg.CommandID, Error: "agent updating; retry later"})
+			cancel()
+			continue
+		}
+		go func() {
+			defer coordinator.EndCommand()
+			handleCommand(ctx, msg, controlWS, executor)
+		}()
 	}
 }
 
@@ -104,11 +143,14 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 	})
 }
 
-func runRelayLoop(ctx context.Context, ws *agent.WSClient, relay *agent.RelayManager) {
+func runRelayLoop(ctx context.Context, ws *agent.WSClient, relay *agent.RelayManager, readiness *update.Coordinator) {
 	defer relay.Reset(context.Canceled)
 	for {
 		frame, err := ws.ReadRelayFrame(ctx)
 		if err != nil {
+			if readiness != nil {
+				readiness.DataReady(false)
+			}
 			if ctx.Err() != nil {
 				return
 			}
@@ -116,6 +158,9 @@ func runRelayLoop(ctx context.Context, ws *agent.WSClient, relay *agent.RelayMan
 			fmt.Fprintf(os.Stderr, "data read error: %v, reconnecting...\n", err)
 			if err := ws.ConnectWithRetry(ctx); err != nil {
 				return
+			}
+			if readiness != nil {
+				readiness.DataReady(true)
 			}
 			continue
 		}
