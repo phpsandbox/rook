@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/phpsandbox/rook/internal/host"
 )
@@ -18,10 +19,11 @@ const maxQueuedHTTPRequests = 1024
 var errHTTPRelayOverloaded = errors.New("HTTP relay at capacity")
 
 type Proxy struct {
-	state    *host.Bindings
-	client   *http.Client
-	requests chan struct{}
-	waiting  chan struct{}
+	state           *host.Bindings
+	client          *http.Client
+	webSocketClient *http.Client
+	requests        chan struct{}
+	waiting         chan struct{}
 }
 
 func NewProxy(state *host.Bindings) *Proxy {
@@ -29,10 +31,18 @@ func NewProxy(state *host.Bindings) *Proxy {
 	transport.MaxIdleConns = 256
 	transport.MaxIdleConnsPerHost = maxConcurrentHTTPRequests
 	transport.MaxConnsPerHost = maxConcurrentHTTPRequests
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	webSocketTransport := transport.Clone()
+	// WebSocket workers enforce their own limits, including pending handshakes.
+	// Their long-lived connections must not reserve HTTP transport slots.
+	webSocketTransport.MaxConnsPerHost = 0
 	return &Proxy{
 		state:    state,
 		requests: make(chan struct{}, maxConcurrentHTTPRequests),
 		waiting:  make(chan struct{}, maxQueuedHTTPRequests),
+		webSocketClient: &http.Client{Transport: webSocketTransport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
 		client: &http.Client{
 			Transport: transport,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

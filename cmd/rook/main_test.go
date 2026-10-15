@@ -84,7 +84,7 @@ func TestDataReconnectCancelsActiveAndQueuedHTTPRequests(t *testing.T) {
 		}
 	}))
 	defer plane.Close()
-	client := agent.NewWSClient("ws"+strings.TrimPrefix(plane.URL, "http"), "test")
+	client := agent.NewWSClient("ws"+strings.TrimPrefix(plane.URL, "http"), "test", true)
 	if err := client.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}

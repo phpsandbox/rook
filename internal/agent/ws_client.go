@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -12,19 +13,31 @@ import (
 )
 
 type WSClient struct {
-	url         string
-	token       string
-	conn        *websocket.Conn
-	mu          sync.Mutex
-	relayWrites chan struct{}
+	url           string
+	token         string
+	allowInsecure bool
+	httpClient    *http.Client
+	conn          *websocket.Conn
+	mu            sync.Mutex
+	relayWrites   chan struct{}
 }
 
-func NewWSClient(url, token string) *WSClient {
-	return &WSClient{url: url, token: token, relayWrites: make(chan struct{}, 1)}
+func NewWSClient(url, token string, allowInsecure bool) *WSClient {
+	return &WSClient{url: url, token: token, allowInsecure: allowInsecure, relayWrites: make(chan struct{}, 1),
+		httpClient: &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}},
+	}
 }
 
 func (c *WSClient) Connect(ctx context.Context) error {
+	if err := validateControlPlaneURL(c.url, c.allowInsecure); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	opts := &websocket.DialOptions{
+		HTTPClient: c.httpClient,
 		HTTPHeader: map[string][]string{
 			"Authorization": {"Bearer " + c.token},
 		},

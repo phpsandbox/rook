@@ -52,8 +52,8 @@ func run(ctx context.Context, cfg agent.Config) error {
 		return fmt.Errorf("recover operations: %w", err)
 	}
 	proxy := agent.NewProxy(state)
-	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token)
-	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token)
+	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token, cfg.AllowInsecureControlPlane)
+	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token, cfg.AllowInsecureControlPlane)
 	relay := agent.NewRelayManager(proxy, dataWS)
 
 	fmt.Printf("rook %s connecting to %s (server: %s)\n", version, cfg.ControlPlane, cfg.ServerID)
@@ -105,6 +105,7 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 }
 
 func runRelayLoop(ctx context.Context, ws *agent.WSClient, relay *agent.RelayManager) {
+	defer relay.Reset(context.Canceled)
 	for {
 		frame, err := ws.ReadRelayFrame(ctx)
 		if err != nil {

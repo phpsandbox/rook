@@ -1,6 +1,6 @@
 module github.com/phpsandbox/rook
 
-go 1.23.0
+go 1.26.9
 
 require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1

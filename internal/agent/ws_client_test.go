@@ -25,7 +25,7 @@ func TestBackpressuredWriteDoesNotHoldConnectionStateLock(t *testing.T) {
 	}))
 	defer server.Close()
 	defer close(release)
-	client := NewWSClient("ws"+strings.TrimPrefix(server.URL, "http"), "test")
+	client := NewWSClient("ws"+strings.TrimPrefix(server.URL, "http"), "test", true)
 	if err := client.Connect(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestCanceledRelaySendDoesNotCloseReplacementConnection(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	client := NewWSClient("ws"+strings.TrimPrefix(server.URL, "http"), "test")
+	client := NewWSClient("ws"+strings.TrimPrefix(server.URL, "http"), "test", true)
 	if err := client.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestCancelDuringRelayWriteDoesNotCloseSharedConnection(t *testing.T) {
 		}
 		server.Close()
 	})
-	client = NewWSClient("ws"+strings.TrimPrefix(server.URL, "http"), "test")
+	client = NewWSClient("ws"+strings.TrimPrefix(server.URL, "http"), "test", true)
 	if err := client.Connect(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -166,5 +166,58 @@ func TestCancelDuringRelayWriteDoesNotCloseSharedConnection(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("healthy frame did not arrive")
+	}
+}
+
+func TestControlConnectionRejectsCleartextBeforeSendingCredential(t *testing.T) {
+	hit := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit <- struct{}{} }))
+	defer server.Close()
+	client := NewWSClient(server.URL, "secret", false)
+	if err := client.Connect(context.Background()); err == nil {
+		t.Fatal("cleartext control connection accepted")
+	}
+	select {
+	case <-hit:
+		t.Fatal("credential sent over cleartext")
+	default:
+	}
+}
+
+func TestControlConnectionRejectsRedirectAndTLSDowngrade(t *testing.T) {
+	hit := make(chan struct{}, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit <- struct{}{} }))
+	defer target.Close()
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Error("missing bearer credential")
+		}
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer origin.Close()
+	client := NewWSClient(origin.URL, "secret", false)
+	client.httpClient.Transport = origin.Client().Transport
+	if err := client.Connect(context.Background()); err == nil {
+		t.Fatal("redirect accepted")
+	}
+	select {
+	case <-hit:
+		t.Fatal("control redirect reached another endpoint")
+	default:
+	}
+}
+
+func TestControlConnectionStillVerifiesTLSWithDevelopmentOverride(t *testing.T) {
+	hit := make(chan struct{}, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit <- struct{}{} }))
+	defer server.Close()
+	client := NewWSClient(server.URL, "secret", true)
+	if err := client.Connect(context.Background()); err == nil {
+		t.Fatal("untrusted TLS certificate accepted")
+	}
+	select {
+	case <-hit:
+		t.Fatal("credential reached an untrusted TLS endpoint")
+	default:
 	}
 }
