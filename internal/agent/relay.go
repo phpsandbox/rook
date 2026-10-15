@@ -159,7 +159,10 @@ func (m *RelayManager) handleOpen(ctx context.Context, frame RelayFrame) {
 	stream := &relayStream{
 		id: frame.StreamID, deploymentID: frame.DeploymentID, webSocket: isWebSocket, hasBody: relayFrameHasBody(frame),
 		ctx: streamCtx, parent: ctx, generation: m.generation, cancel: cancel,
-		incoming: make(chan RelayFrame, maxRelayBufferedFrames), idleTimeout: m.limits.idleTimeout,
+		idleTimeout: m.limits.idleTimeout,
+	}
+	if stream.hasBody || isWebSocket {
+		stream.incoming = make(chan RelayFrame, maxRelayBufferedFrames)
 	}
 	stream.stopGeneration = context.AfterFunc(m.generation, func() { cancel(context.Canceled) })
 	stream.idle = time.AfterFunc(stream.idleTimeout, func() { cancel(errRelayIdle) })
