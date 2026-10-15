@@ -93,7 +93,7 @@ func TestDataReconnectCancelsActiveAndQueuedHTTPRequests(t *testing.T) {
 	defer first.CloseNow()
 	relay := agent.NewRelayManager(agent.NewProxy(bindings), client)
 	done := make(chan struct{})
-	go func() { runRelayLoop(ctx, client, relay); close(done) }()
+	go func() { runRelayLoop(ctx, client, relay, nil); close(done) }()
 	defer func() { cancel(); client.Close(); <-done }()
 	writeFrame := func(conn *websocket.Conn, id, path string) {
 		t.Helper()
@@ -180,7 +180,7 @@ func TestCorruptOperationStateNeverConnects(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir})
+	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir}, false)
 	if err == nil || !strings.Contains(err.Error(), "recover operations") || requests.Load() != 0 {
 		t.Fatalf("corrupt host connected: %v, requests=%d", err, requests.Load())
 	}

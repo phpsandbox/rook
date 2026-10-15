@@ -755,3 +755,90 @@ func TestHTTPIdleTimeoutReleasesUpstreamCapacity(t *testing.T) {
 	waitRelayFrame(t, sender, "next", RelayFrameEnd)
 	waitRelayWorkers(t, manager, 0)
 }
+
+func TestRelayDrainRejectsNewStreamsAndPreservesExistingResponse(t *testing.T) {
+	entered := make(chan struct{})
+	finish := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow" {
+			close(entered)
+			<-finish
+		}
+		_, _ = io.WriteString(w, "complete")
+	}))
+	defer origin.Close()
+	sender := newRecordingTunnelSender()
+	manager := NewRelayManager(proxyForTestServers(t, origin), sender)
+	defer manager.Reset(context.Canceled)
+	manager.Handle(context.Background(), relayOpen("existing", "deployment-0", "/slow", false))
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("request did not start")
+	}
+	drained := make(chan struct{})
+	go func() { _ = manager.Drain(context.Background()); close(drained) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		manager.mu.Lock()
+		draining := manager.draining
+		manager.mu.Unlock()
+		if draining {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("drain did not begin")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	manager.Handle(context.Background(), relayOpen("new", "deployment-0", "/ok", false))
+	if frame := waitRelayFrame(t, sender, "new", RelayFrameReset); frame.Error != "agent updating" {
+		t.Fatalf("new admission: %+v", frame)
+	}
+	select {
+	case <-drained:
+		t.Fatal("did not wait for active response")
+	default:
+	}
+	close(finish)
+	waitRelayFrame(t, sender, "existing", RelayFrameEnd)
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("drain did not finish")
+	}
+	manager.Resume()
+	manager.Handle(context.Background(), relayOpen("resumed", "deployment-0", "/ok", false))
+	waitRelayFrame(t, sender, "resumed", RelayFrameEnd)
+}
+
+func TestRelayDrainDeadlineCancelsStalledStream(t *testing.T) {
+	entered := make(chan struct{})
+	canceled := make(chan struct{})
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+		close(canceled)
+	}))
+	defer origin.Close()
+	sender := newRecordingTunnelSender()
+	manager := NewRelayManager(proxyForTestServers(t, origin), sender)
+	defer manager.Reset(context.Canceled)
+	manager.Handle(context.Background(), relayOpen("stalled", "deployment-0", "/", false))
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("request did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if err := manager.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("stalled upstream not canceled")
+	}
+	waitRelayWorkers(t, manager, 0)
+}
