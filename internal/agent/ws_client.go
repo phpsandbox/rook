@@ -12,14 +12,15 @@ import (
 )
 
 type WSClient struct {
-	url   string
-	token string
-	conn  *websocket.Conn
-	mu    sync.Mutex
+	url         string
+	token       string
+	conn        *websocket.Conn
+	mu          sync.Mutex
+	relayWrites chan struct{}
 }
 
 func NewWSClient(url, token string) *WSClient {
-	return &WSClient{url: url, token: token}
+	return &WSClient{url: url, token: token, relayWrites: make(chan struct{}, 1)}
 }
 
 func (c *WSClient) Connect(ctx context.Context) error {
@@ -74,21 +75,39 @@ func (c *WSClient) Send(ctx context.Context, msg OutboundMessage) error {
 }
 
 func (c *WSClient) SendRelayFrame(ctx context.Context, frame RelayFrame) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	data, err := msgpack.Marshal(frame)
 	if err != nil {
 		return fmt.Errorf("marshal outbound messagepack: %w", err)
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
+	// Canceled producers can leave the queue without interrupting another
+	// stream's write. Once a frame starts, let it finish atomically: canceling
+	// the context passed to websocket.Write closes the shared connection.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case c.relayWrites <- struct{}{}:
+	}
+	defer func() { <-c.relayWrites }()
 	c.mu.Lock()
 	conn := c.conn
+	contextErr := ctx.Err()
 	c.mu.Unlock()
+	// A canceled stream from the previous data connection must not write to
+	// its replacement (a canceled websocket write can close that connection).
+	if contextErr != nil {
+		return contextErr
+	}
 	if conn == nil {
 		return fmt.Errorf("not connected")
 	}
 
-	return conn.Write(ctx, websocket.MessageBinary, data)
+	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return conn.Write(writeCtx, websocket.MessageBinary, data)
 }
 
 func (c *WSClient) Read(ctx context.Context) (InboundMessage, error) {

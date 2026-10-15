@@ -8,9 +8,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"nhooyr.io/websocket"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -148,6 +150,146 @@ func TestRelayManagerProxiesGETWithoutRequestBodyStream(t *testing.T) {
 	if messages[2].Type != RelayFrameEnd {
 		t.Fatalf("end message = %#v", messages[2])
 	}
+}
+
+func TestRelayOverloadedUploadUnblocksReceiveLoop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.Copy(w, r.Body) }))
+	defer server.Close()
+	proxy := proxyForTestServers(t, server)
+	proxy.requests = make(chan struct{}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	held, err := proxy.OpenHTTP(ctx, "deployment-0", http.MethodGet, "/", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Body.Close()
+	sender := newRecordingTunnelSender()
+	manager := NewRelayManager(proxy, sender)
+	manager.Handle(ctx, RelayFrame{Protocol: RelayProtocol, Type: RelayFrameOpen, StreamID: "overloaded", Kind: RelayKindHTTP, DeploymentID: "deployment-0", Method: http.MethodPost, Path: "/", HasBody: boolPtr(true)})
+	dataHandled := make(chan struct{})
+	go func() {
+		manager.Handle(ctx, RelayFrame{Protocol: RelayProtocol, Type: RelayFrameData, StreamID: "overloaded", Kind: RelayKindHTTP, Data: []byte("upload")})
+		close(dataHandled)
+	}()
+	select {
+	case <-dataHandled:
+	case <-ctx.Done():
+		t.Fatal("rejected upload blocked the shared receive loop")
+	}
+	frames := sender.wait(t, time.Second)
+	if len(frames) != 1 || frames[0].Type != RelayFrameReset || frames[0].Error != errHTTPRelayOverloaded.Error() {
+		t.Fatalf("overload response: %#v", frames)
+	}
+	held.Body.Close()
+	resp, err := proxy.OpenHTTP(ctx, "deployment-0", http.MethodPost, "/", nil, strings.NewReader("accepted"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || string(body) != "accepted" {
+		t.Fatalf("next upload failed: %q, %v", body, err)
+	}
+}
+
+func TestRelayResetCancelsQueuedBodylessRequest(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer server.Close()
+	proxy := proxyForTestServers(t, server)
+	proxy.requests = make(chan struct{}, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	held, err := proxy.OpenHTTP(ctx, "deployment-0", http.MethodGet, "/held", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Body.Close()
+	manager := NewRelayManager(proxy, newRecordingTunnelSender())
+	manager.Handle(ctx, RelayFrame{Protocol: RelayProtocol, Type: RelayFrameOpen, StreamID: "queued", Kind: RelayKindHTTP, DeploymentID: "deployment-0", Method: http.MethodGet, Path: "/canceled"})
+	manager.Handle(ctx, RelayFrame{Protocol: RelayProtocol, Type: RelayFrameReset, StreamID: "queued", Kind: RelayKindHTTP, Error: "caller disconnected"})
+	held.Body.Close()
+	resp, err := proxy.OpenHTTP(ctx, "deployment-0", http.MethodGet, "/healthy", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("canceled queued request reached upstream: %d requests", got)
+	}
+}
+
+func TestRelayReusesCompletedHTTPIDForWebSocket(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	received := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/http" {
+			_, _ = io.WriteString(w, "ok")
+			return
+		}
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			received <- err.Error()
+			return
+		}
+		defer conn.CloseNow()
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			received <- err.Error()
+			return
+		}
+		received <- string(data)
+	}))
+	defer server.Close()
+	defer cancel()
+	terminal := make(chan struct{})
+	release := make(chan struct{})
+	var ends atomic.Int32
+	sender := relayFrameSenderFunc(func(ctx context.Context, frame RelayFrame) error {
+		if frame.Type == RelayFrameEnd && ends.Add(1) == 1 {
+			close(terminal)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	})
+	manager := NewRelayManager(proxyForTestServers(t, server), sender)
+	defer func() { cancel(); manager.Reset(context.Canceled) }()
+	frame := RelayFrame{Protocol: RelayProtocol, Type: RelayFrameOpen, Kind: RelayKindHTTP, StreamID: "reused", DeploymentID: "deployment-0", Method: http.MethodGet, Path: "/http"}
+	manager.Handle(ctx, frame)
+	select {
+	case <-terminal:
+	case <-ctx.Done():
+		t.Fatal("HTTP request did not end")
+	}
+	// Simulate a peer reusing the ID as soon as it receives the terminal frame,
+	// before the old request goroutine has finished returning.
+	frame.Path = "/ws"
+	frame.Headers = []HeaderPair{{"Upgrade", "websocket"}}
+	manager.Handle(ctx, frame)
+	manager.Handle(ctx, RelayFrame{Protocol: RelayProtocol, Type: RelayFrameData, Kind: RelayKindHTTP, StreamID: "reused", Data: []byte("payload"), Text: true})
+	select {
+	case data := <-received:
+		if data != "payload" {
+			t.Fatalf("websocket received %q", data)
+		}
+	case <-ctx.Done():
+		t.Fatal("retiring HTTP stream swallowed WebSocket data")
+	}
+	close(release)
+}
+
+type relayFrameSenderFunc func(context.Context, RelayFrame) error
+
+func (f relayFrameSenderFunc) SendRelayFrame(ctx context.Context, frame RelayFrame) error {
+	return f(ctx, frame)
 }
 
 type recordingTunnelSender struct {

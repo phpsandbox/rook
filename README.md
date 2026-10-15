@@ -25,6 +25,9 @@ control_plane: "https://rook.phpsandbox.test/connect"
 state_dir: ".rook/state"
 ```
 
+For local HTTP relay throughput and reliability measurements, see
+[HTTP relay load testing](docs/relay-load.md).
+
 ## Install
 
 Rook supports Linux on AMD64 and ARM64. The host must use systemd and have a

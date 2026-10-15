@@ -1,0 +1,6 @@
+Diagnostic build: production code plus the pool experiment and temporary SendRelayFrame error logging.
+Cold start at 1024 concurrent 3 MiB GETs.
+First write error:
+relay send failed stream=471 type=stream.data elapsed=367.472959ms error=failed to write msg: failed to write frame: failed to write frame payload: write tcp 127.0.0.1:56095->127.0.0.1:56093: write: no buffer space available
+Subsequent errors reported use of closed network connection, and Rook reconnected the data plane.
+Full diagnostic stderr was retained in /tmp/rook-3m-1024.stderr for this session.

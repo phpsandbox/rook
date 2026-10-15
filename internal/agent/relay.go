@@ -28,6 +28,7 @@ type RelayManager struct {
 
 type httpRelayStream struct {
 	writer *io.PipeWriter
+	cancel context.CancelFunc
 }
 
 type webSocketRelayStream struct {
@@ -71,7 +72,10 @@ func (m *RelayManager) Reset(err error) {
 	m.mu.Unlock()
 
 	for _, stream := range httpStreams {
-		_ = stream.writer.CloseWithError(err)
+		stream.cancel()
+		if stream.writer != nil {
+			_ = stream.writer.CloseWithError(err)
+		}
 	}
 	for _, stream := range webSocketStreams {
 		stream.cancel()
@@ -93,21 +97,25 @@ func (m *RelayManager) handleOpen(ctx context.Context, frame RelayFrame) {
 }
 
 func (m *RelayManager) handleHTTPOpen(ctx context.Context, frame RelayFrame) {
+	streamCtx, cancel := context.WithCancel(ctx)
 	var body io.Reader = http.NoBody
+	stream := &httpRelayStream{cancel: cancel}
 	if relayFrameHasBody(frame) {
 		reader, writer := io.Pipe()
 		body = reader
-		stream := &httpRelayStream{writer: writer}
-
-		m.mu.Lock()
-		if previous := m.httpStreams[frame.StreamID]; previous != nil {
+		stream.writer = writer
+	}
+	m.mu.Lock()
+	if previous := m.httpStreams[frame.StreamID]; previous != nil {
+		previous.cancel()
+		if previous.writer != nil {
 			_ = previous.writer.CloseWithError(fmt.Errorf("stream superseded"))
 		}
-		m.httpStreams[frame.StreamID] = stream
-		m.mu.Unlock()
 	}
+	m.httpStreams[frame.StreamID] = stream
+	m.mu.Unlock()
 
-	go m.runHTTPRequest(ctx, frame, body)
+	go m.runHTTPRequest(streamCtx, frame, body, stream)
 }
 
 func (m *RelayManager) handleWebSocketOpen(ctx context.Context, frame RelayFrame) {
@@ -160,7 +168,7 @@ func (m *RelayManager) handleWebSocketOpen(ctx context.Context, frame RelayFrame
 
 func (m *RelayManager) handleData(ctx context.Context, frame RelayFrame) {
 	if stream := m.httpStream(frame.StreamID); stream != nil {
-		if len(frame.Data) > 0 {
+		if stream.writer != nil && len(frame.Data) > 0 {
 			_, _ = stream.writer.Write(frame.Data)
 		}
 		return
@@ -181,8 +189,10 @@ func (m *RelayManager) handleData(ctx context.Context, frame RelayFrame) {
 }
 
 func (m *RelayManager) handleEnd(frame RelayFrame) {
-	if stream := m.removeHTTP(frame.StreamID); stream != nil {
-		_ = stream.writer.Close()
+	if stream := m.httpStream(frame.StreamID); stream != nil {
+		if stream.writer != nil {
+			_ = stream.writer.Close()
+		}
 		return
 	}
 
@@ -196,14 +206,25 @@ func (m *RelayManager) handleEnd(frame RelayFrame) {
 func (m *RelayManager) handleReset(frame RelayFrame) {
 	message := frame.Error
 	if stream := m.removeHTTP(frame.StreamID); stream != nil {
-		_ = stream.writer.CloseWithError(fmt.Errorf("%s", message))
+		stream.cancel()
+		if stream.writer != nil {
+			_ = stream.writer.CloseWithError(fmt.Errorf("%s", message))
+		}
 		return
 	}
 	m.closeWebSocket(frame.StreamID, websocket.StatusInternalError, message)
 }
 
-func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, body io.Reader) {
-	defer m.removeHTTP(frame.StreamID)
+func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, body io.Reader, stream *httpRelayStream) {
+	defer func() {
+		stream.cancel()
+		m.finishHTTP(frame.StreamID, stream)
+	}()
+	// Closing the pipe also unblocks an in-flight data frame when request
+	// creation or admission fails before an HTTP client starts reading it.
+	if closer, ok := body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
 
 	resp, err := m.proxy.OpenHTTP(ctx, frame.DeploymentID, frame.Method, frame.Path, frame.Headers, body)
 	if err != nil {
@@ -248,6 +269,12 @@ func (m *RelayManager) runHTTPRequest(ctx context.Context, frame RelayFrame, bod
 		}
 	}
 
+	// Release upstream capacity before telling the caller the response ended,
+	// so its next upload can acquire the just-completed request's slot.
+	_ = resp.Body.Close()
+	// Retire before the terminal frame: its recipient may immediately reuse
+	// this ID for a WebSocket upgrade while this goroutine is still returning.
+	m.finishHTTP(frame.StreamID, stream)
 	_ = m.ws.SendRelayFrame(ctx, RelayFrame{
 		Protocol: RelayProtocol,
 		Type:     RelayFrameEnd,
@@ -313,6 +340,14 @@ func (m *RelayManager) removeHTTP(streamID string) *httpRelayStream {
 	return stream
 }
 
+func (m *RelayManager) finishHTTP(streamID string, expected *httpRelayStream) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.httpStreams[streamID] == expected {
+		delete(m.httpStreams, streamID)
+	}
+}
+
 func (m *RelayManager) removeWebSocket(streamID string) *webSocketRelayStream {
 	m.mu.Lock()
 	stream := m.webSocketStreams[streamID]
@@ -333,6 +368,9 @@ func (m *RelayManager) closeWebSocket(streamID string, code websocket.StatusCode
 }
 
 func (m *RelayManager) sendReset(ctx context.Context, streamID string, kind string, err error) {
+	if ctx.Err() != nil {
+		return
+	}
 	if streamID == "" {
 		return
 	}
