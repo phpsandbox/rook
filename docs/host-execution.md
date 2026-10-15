@@ -25,10 +25,6 @@ A lost connection does not cancel an executing process. After a host-agent resta
 
 A binding contains a local port and optional opaque metadata. The relay forwards HTTP and WebSocket traffic to that port. The caller owns process startup, readiness checks, binding changes, and retirement.
 
-HTTP traffic uses a private shared connection pool with at most 64 active upstream responses across all bindings. Bodyless requests can wait in a queue of up to 1024 requests. Requests with bodies must acquire an active slot immediately: queuing a streamed upload would block the shared receive loop before other uploads could complete. A saturated upload or a full bodyless queue receives `stream.reset` with `HTTP relay at capacity`, before the request reaches the local application. The caller can retry this overload response when capacity becomes available.
-
-An incoming `stream.reset` cancels the corresponding HTTP request, including a queued bodyless request. A data-plane disconnect cancels all HTTP streams. Cancellation of an individual stream does not interrupt a frame already being written to the shared WebSocket; that frame completes under a separate five-second socket write timeout. Frames still waiting to be written honor stream cancellation. These HTTP admission limits do not apply to WebSocket upgrades.
-
 ## Validation
 
 Run `go test -race ./...` and `go vet ./...`. Tests cover concurrent operations, duplicate suppression, cancellation, descendant termination, inherited output, private files, archive containment, restart outcomes, and HTTP/WebSocket forwarding.
