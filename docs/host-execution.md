@@ -28,3 +28,48 @@ A binding contains a local port and optional opaque metadata. The relay forwards
 ## Validation
 
 Run `go test -race ./...` and `go vet ./...`. Tests cover concurrent operations, duplicate suppression, cancellation, descendant termination, inherited output, private files, archive containment, restart outcomes, and HTTP/WebSocket forwarding.
+
+## Local release commands
+
+`rook releases` inspects and restores retained container releases without loading
+agent credentials, connecting to the control plane, or starting the daemon.
+Commands return JSON. They require the existing state directory and deployment ID:
+
+```sh
+sudo rook releases list --state-dir /var/lib/rook/state --deployment app-123
+sudo rook releases inspect release-a --state-dir /var/lib/rook/state --deployment app-123
+sudo rook releases restore release-a \
+  --state-dir /var/lib/rook/state --deployment app-123 \
+  --expect-current release-b --rook-service rook.service
+```
+
+List and inspect are read-only and report the current release, retained releases,
+recovery fence and uncertain host operations. Restore requires the named systemd
+service to be stopped and takes an exclusive local restore lock. It writes a
+persistent `recovery-fence` before container effects. Every reported running or
+interrupted operation must first be inspected and explicitly acknowledged with a
+repeated `--acknowledge-operation ID` argument. Acknowledgement does not cancel,
+replay or mark an operation complete; verify its actual effects first.
+
+Restore starts only the exact retained container IDs, using their existing image
+layers, commands, environment and mounts. It does not build, pull images, create
+containers, run migrations or restore database contents. All target images and
+containers must still exist. It discovers the actual loopback web port and
+requires HTTP 200 without following redirects, then checks every retained role
+is running and not restarting. Only then does it persist a recovery verification
+and switch the binding. A failed start/readiness check leaves the binding intact
+and attempts bounded cleanup of only the containers it restarted. Cancellation
+also permits bounded cleanup; Docker effects may require inspection afterward.
+
+After switching the binding, restore stops the preceding release's containers
+using its recorded shutdown timeout. If this fails, the error reports that the
+restored binding is already saved. Persistent services, mounted data and unrelated
+bindings are preserved. The restored application must remain compatible with the
+existing database and configuration.
+
+The service stays stopped and the recovery fence remains on success and failure.
+Verify the application locally, restart Rook when its authentication service is
+available, reconcile the verified release and uncertain operations with the
+control plane, then remove the fence. Public traffic still requires an available
+relay. These commands replace the former Python recovery utility; Python is no
+longer required for release inspection or restoration.
