@@ -20,7 +20,15 @@ var version = "dev"
 func main() {
 	configPath := flag.String("config", agent.DefaultConfigPath, "path to rook config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	showCapabilities := flag.Bool("capabilities", false, "print supported capabilities without connecting")
 	flag.Parse()
+	if *showCapabilities {
+		if err := json.NewEncoder(os.Stdout).Encode([]string{host.Capability, host.RecoveryFenceCapability}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *showVersion {
 		fmt.Println(version)
@@ -99,7 +107,7 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 		Type:         "hello",
 		ServerID:     serverID,
 		Version:      version,
-		Capabilities: []string{host.Capability},
+		Capabilities: []string{host.Capability, host.RecoveryFenceCapability},
 		Deployments:  deployments,
 	})
 }
