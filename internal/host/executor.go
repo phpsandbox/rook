@@ -78,6 +78,13 @@ func (e *Executor) Recover() error {
 }
 
 func (e *Executor) Execute(ctx context.Context, request Request, onOutput func(string)) (Result, error) {
+	if request.Action != "info" && request.Action != "read" && request.Action != "binding.read" {
+		if _, err := os.Stat(filepath.Join(e.Directory, "recovery-fence")); err == nil {
+			return Result{}, fmt.Errorf("host mutations are fenced for independent recovery; reconcile interrupted operations before removing recovery-fence")
+		} else if !os.IsNotExist(err) {
+			return Result{}, fmt.Errorf("inspect recovery fence: %w", err)
+		}
+	}
 	if request.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)

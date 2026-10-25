@@ -6,7 +6,7 @@ It is intentionally small and stable. The agent connects a registered server to 
 
 Rook stays focused on durable server-side primitives that can run for a long time with minimal updates.
 
-The host execution contract are documented in
+The host execution contract and local `rook releases` commands are documented in
 [Host execution](docs/host-execution.md).
 
 ## Development

@@ -3,6 +3,7 @@ package host
 import "encoding/json"
 
 const Capability = "host-execution.v1"
+const RecoveryFenceCapability = "host-recovery-fence.v1"
 
 type Request struct {
 	BindingID      string            `json:"bindingId,omitempty" msgpack:"bindingId,omitempty"`
