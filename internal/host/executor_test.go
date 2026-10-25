@@ -208,3 +208,64 @@ func TestExitedLeaderDoesNotWaitIndefinitelyForInheritedOutput(t *testing.T) {
 		t.Fatal("output waiting was not bounded")
 	}
 }
+
+func TestTerminalJournalFailureDoesNotRemainRunningOrReplay(t *testing.T) {
+	for _, scenario := range []struct {
+		name     string
+		exitCode string
+		status   string
+		message  string
+	}{
+		{name: "failed command", exitCode: "7", status: "failed", message: "exit status 7"},
+		{name: "completed command", exitCode: "0", status: "interrupted", message: "inspect effects before retrying"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			directory := t.TempDir()
+			executor := &Executor{Directory: directory}
+			operations := filepath.Join(directory, "operations")
+			count := filepath.Join(directory, "count")
+			request := Request{
+				ID: "effect", Action: "exec", Command: []string{"sh", "-c",
+					`printf x >> "$1"; mv "$2" "$2.saved"; printf blocked > "$2"; printf done; exit "$3"`,
+					"sh", count, operations, scenario.exitCode},
+			}
+
+			result, err := executor.Execute(context.Background(), request, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Status != scenario.status || result.Output != "done" || !strings.Contains(result.Error, scenario.message) || !strings.Contains(result.Error, "persist terminal operation result") {
+				t.Fatalf("terminal result = %+v", result)
+			}
+
+			if err := os.Remove(operations); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(operations+".saved", operations); err != nil {
+				t.Fatal(err)
+			}
+
+			saved, err := executor.Status(request.ID)
+			if err != nil || saved.Status != scenario.status || saved.Error != result.Error {
+				t.Fatalf("status = %+v, error = %v", saved, err)
+			}
+			replayed, err := executor.Execute(context.Background(), request, nil)
+			if err != nil || replayed.Status != scenario.status || replayed.Error != result.Error {
+				t.Fatalf("replay = %+v, error = %v", replayed, err)
+			}
+			content, err := os.ReadFile(count)
+			if err != nil || string(content) != "x" {
+				t.Fatalf("effect count = %q, error = %v", content, err)
+			}
+
+			restarted := &Executor{Directory: directory}
+			if err := restarted.Recover(); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := restarted.Status(request.ID)
+			if err != nil || recovered.Status != "interrupted" {
+				t.Fatalf("recovered = %+v, error = %v", recovered, err)
+			}
+		})
+	}
+}
