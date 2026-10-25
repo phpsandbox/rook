@@ -54,6 +54,32 @@ This path requires retained containers, their image layers, their private
 configuration, and persistent data to remain intact. Host loss needs a separate
 tested backup of those prerequisites; a release snapshot alone is insufficient.
 
+The independent recovery sequence is:
+
+```mermaid
+sequenceDiagram
+    participant Operator
+    participant Host as Host over direct SSH
+    participant Rook
+    participant Platform as Publication control plane
+    Operator->>Host: Stop Rook and inspect uncertain operations
+    Operator->>Host: Run recovery utility with expected release identities
+    Host->>Host: Persist mutation fence
+    Host->>Host: Restart retained containers and verify local readiness
+    Host->>Host: Save binding and fresh verification identity
+    Host-->>Operator: Local recovery verified and Rook remains stopped
+    Operator->>Rook: Restart agent and verify ingress
+    Operator->>Platform: Reconcile verified recovered release
+    Operator->>Host: Remove fence after inspecting uncertain operations
+```
+
+The fence affects all deployments managed by this Rook instance. It blocks new
+mutations while allowing inspection and traffic forwarding after the agent
+returns; it does not cancel already-running effects. Restoring a retained
+application release leaves its database and mounted data unchanged. Database
+compatibility must be established separately. Public ingress also needs the
+agent and routing path available; local readiness alone does not establish it.
+
 ## Operations
 
 A `host` command carries `payload.id`, `payload.action`, and the fields used by that action:
