@@ -230,7 +230,7 @@ type pendingUpdate struct {
 	Outcome   string     `json:"outcome,omitempty"`
 }
 
-// Apply is run by the root systemd helper. A missing opt-in socket means no
+// Apply is run by the root systemd helper. A missing coordinator socket means no
 // network request is made. The journal recovers an interrupted replacement.
 func (u *Updater) Apply(ctx context.Context) (applyErr error) {
 	if err := os.MkdirAll(u.directory, 0700); err != nil {

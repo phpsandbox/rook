@@ -67,17 +67,17 @@ uninstall
 			if err != nil {
 				t.Fatal(err)
 			}
-			if strings.Contains(string(unit), "--auto-update") != enabled {
+			if strings.Contains(string(unit), "--manual-updates") == enabled {
 				t.Fatalf("wrong daemon update policy: %s", unit)
 			}
-			if !strings.Contains(string(unit), "--managed-updates") {
-				t.Fatalf("owner-requested updates were not enabled: %s", unit)
+			if strings.Contains(string(unit), "--auto-update") || strings.Contains(string(unit), "--managed-updates") {
+				t.Fatalf("obsolete update flags in service: %s", unit)
 			}
 			if !strings.Contains(string(unit), "RuntimeDirectoryMode=0700") {
 				t.Fatal("missing private runtime directory")
 			}
 			helper, _ := os.ReadFile(filepath.Join(directory, "helper-unit"))
-			if !strings.Contains(string(helper), "User=root") || !strings.Contains(string(helper), "--apply-auto-update") {
+			if !strings.Contains(string(helper), "User=root") || !strings.Contains(string(helper), "--apply-update") {
 				t.Fatalf("invalid helper: %s", helper)
 			}
 			log, _ := os.ReadFile(filepath.Join(directory, "systemctl.log"))
@@ -100,7 +100,7 @@ func TestInstallerRejectsOldBinaryByDefaultAndClearsPendingManualUpdate(t *testi
 		t.Run(fmt.Sprint(supported), func(t *testing.T) {
 			help := "  -version"
 			if supported {
-				help = "  -auto-update\n  -managed-updates"
+				help = "  -manual-updates"
 			}
 			binary := []byte("#!/bin/sh\nprintf '%s\\n' '" + help + "'\n")
 			hash := sha256.Sum256(binary)
@@ -124,7 +124,7 @@ download_binary
 				if _, err := os.Stat(filepath.Join(directory, "bin/.rook-update/pending.json")); !os.IsNotExist(err) {
 					t.Fatal("manual install did not clear pending update")
 				}
-			} else if err == nil || string(actual) != "old binary" || !strings.Contains(string(output), "does not support --auto-update") {
+			} else if err == nil || string(actual) != "old binary" || !strings.Contains(string(output), "does not support --manual-updates") {
 				t.Fatalf("unsupported install: %v, %q\n%s", err, actual, output)
 			}
 		})
@@ -143,7 +143,7 @@ start_service
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(unit), "--managed-updates") || strings.Contains(string(unit), "--auto-update") {
+	if !strings.Contains(string(unit), "--manual-updates") {
 		t.Fatalf("managed installation changed automatic consent: %s", unit)
 	}
 	timer, err := os.ReadFile(filepath.Join(directory, "units", "rook-update.timer"))
@@ -155,7 +155,7 @@ start_service
 	}
 }
 
-func TestManualInstallerRejectsBinaryWithoutManagedUpdates(t *testing.T) {
+func TestManualInstallerRejectsBinaryWithoutManualUpdatePolicy(t *testing.T) {
 	binary := []byte("#!/bin/sh\nprintf '%s\\n' '  -auto-update'\n")
 	hash := sha256.Sum256(binary)
 	directory, output, err := installerFixture(t, fmt.Sprintf(`
@@ -165,7 +165,7 @@ printf '%%s\n' '%x  rook-linux-amd64' > "$ROOK_TEST_ROOT/downloads/rook-linux-am
 printf 'old binary' > "$ROOK_TEST_ROOT/bin/rook"
 download_binary
 `, binary, hash), "--manual-updates")
-	if err == nil || !strings.Contains(string(output), "does not support --managed-updates") {
+	if err == nil || !strings.Contains(string(output), "does not support --manual-updates") {
 		t.Fatalf("unsupported managed install: %v\n%s", err, output)
 	}
 

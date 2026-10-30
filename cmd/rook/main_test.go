@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/phpsandbox/rook/internal/host"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/phpsandbox/rook/internal/agent"
+	"github.com/phpsandbox/rook/internal/update"
 	"github.com/vmihailenco/msgpack/v5"
 	"nhooyr.io/websocket"
 )
@@ -181,7 +184,7 @@ func TestCorruptOperationStateNeverConnects(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir}, false, false)
+	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir}, false, filepath.Join(dir, "update.sock"))
 	if err == nil || !strings.Contains(err.Error(), "recover operations") || requests.Load() != 0 {
 		t.Fatalf("corrupt host connected: %v, requests=%d", err, requests.Load())
 	}
@@ -222,4 +225,107 @@ func (s savedTestBindings) Resolve(_ context.Context, id string) (host.Binding, 
 		return host.Binding{}, fmt.Errorf("deployment %s not found", id)
 	}
 	return binding, nil
+}
+
+func TestDaemonUpdatePolicyReachesTelemetryAndHelper(t *testing.T) {
+	for _, scenario := range []struct {
+		name      string
+		manual    bool
+		automatic bool
+	}{
+		{name: "automatic by default", automatic: true},
+		{name: "manual approval", manual: true, automatic: false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
+			heartbeats := make(chan agent.OutboundMessage, 1)
+			plane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				connection, err := websocket.Accept(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer connection.CloseNow()
+				for {
+					_, data, err := connection.Read(ctx)
+					if err != nil {
+						return
+					}
+					var message agent.OutboundMessage
+					if err := json.Unmarshal(data, &message); err != nil {
+						t.Errorf("invalid agent message: %v", err)
+						return
+					}
+					if message.Type == "heartbeat" {
+						select {
+						case heartbeats <- message:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}
+			}))
+			t.Cleanup(plane.Close)
+			directory := t.TempDir()
+			socketDirectory, err := os.MkdirTemp("", "rook-policy-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(socketDirectory) })
+			socket := filepath.Join(socketDirectory, "update.sock")
+			done := make(chan error, 1)
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case err := <-done:
+					if err != nil {
+						t.Errorf("daemon shutdown: %v", err)
+					}
+				case <-time.After(5 * time.Second):
+					t.Error("daemon did not stop")
+				}
+			})
+
+			go func() {
+				done <- run(ctx, agent.Config{
+					ServerID: "test", Token: "test", ControlPlane: plane.URL,
+					StateDir: directory, AllowInsecureControlPlane: true,
+				}, scenario.manual, socket)
+			}()
+
+			var heartbeat agent.OutboundMessage
+			select {
+			case heartbeat = <-heartbeats:
+			case <-ctx.Done():
+				t.Fatal("daemon did not report update policy")
+			}
+			if heartbeat.Agent == nil {
+				t.Fatal("heartbeat omitted agent information")
+			}
+			if !heartbeat.Agent.ManagedUpdates || heartbeat.Agent.AutoUpdate != scenario.automatic {
+				t.Fatalf("incorrect reported update policy: %+v", heartbeat.Agent)
+			}
+
+			transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			}}
+			t.Cleanup(transport.CloseIdleConnections)
+			client := &http.Client{Transport: transport, Timeout: time.Second}
+			response, err := client.Get("http://localhost/status")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { response.Body.Close() })
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("helper status: %d", response.StatusCode)
+			}
+			var status update.Status
+			if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+				t.Fatal(err)
+			}
+			if !status.Ready || status.AutoUpdate != scenario.automatic {
+				t.Fatalf("incorrect helper update policy: %+v", status)
+			}
+		})
+	}
 }

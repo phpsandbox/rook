@@ -166,12 +166,8 @@ download_binary() {
   download "$(asset_url "$VERSION" "${asset}.sha256")" "$checksum_tmp"
   verify_checksum "$binary_tmp" "$checksum_tmp"
   chmod 0700 "$binary_tmp"
-  if ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -auto-update'; then
-    err "selected Rook version does not support --auto-update"
-  fi
-
-  if ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -managed-updates'; then
-    err "selected Rook version does not support --managed-updates"
+  if ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -manual-updates'; then
+    err "selected Rook version does not support --manual-updates"
   fi
 
   local staged
@@ -198,9 +194,9 @@ YAML
 }
 
 write_systemd_unit() {
-  local auto_update_arg=" --managed-updates"
-  if [[ "$AUTO_UPDATE" == "true" ]]; then
-    auto_update_arg="${auto_update_arg} --auto-update"
+  local update_arg=""
+  if [[ "$AUTO_UPDATE" == "false" ]]; then
+    update_arg=" --manual-updates"
   fi
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 [Unit]
@@ -217,7 +213,7 @@ WorkingDirectory=${STATE_DIR}
 RuntimeDirectory=rook
 RuntimeDirectoryMode=0700
 Environment=HOME=${STATE_DIR}
-ExecStart=${INSTALL_DIR}/${BINARY_NAME} --config ${CONFIG_FILE}${auto_update_arg}
+ExecStart=${INSTALL_DIR}/${BINARY_NAME} --config ${CONFIG_FILE}${update_arg}
 Restart=always
 RestartSec=5
 
@@ -235,7 +231,7 @@ Wants=network-online.target
 Type=oneshot
 User=root
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=${INSTALL_DIR}/${BINARY_NAME} --apply-auto-update
+ExecStart=${INSTALL_DIR}/${BINARY_NAME} --apply-update
 TimeoutStartSec=10min
 TimeoutStopSec=4min
 UMask=0077

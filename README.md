@@ -84,12 +84,12 @@ installing or reinstalling to keep automatic updates disabled.
 
 ## Automatic updates
 
-Automatic patch updates are enabled by default for systemd installations.
-The installer starts the daemon with `--managed-updates --auto-update`;
-`--manual-updates` omits the automatic-update flag. Standalone daemon invocations
-do not enable either mode implicitly and require the systemd helper to install
-updates. Release signature verification is built into Rook; no additional tool or
-GitHub login is required.
+Automatic patch updates are enabled by default in Rook. The installer starts the
+service without update flags. Pass `--manual-updates` to either the installer or
+the daemon to require owner approval while retaining owner-requested updates.
+Use the systemd installer to provision the privileged helper and private runtime
+socket required by both update modes. Release signature verification is built
+into Rook; no additional tool or GitHub login is required.
 
 The helper checks for automatic updates at most once every 24 hours.
 In manual mode, release requests are made only for an explicit owner update
@@ -112,9 +112,8 @@ checks. Inspect update attempts with `journalctl -u rook-update.service` or run
 a check immediately with `sudo systemctl start rook-update.service`.
 
 To stop automatic updates, rerun the installer with `--manual-updates`.
-Alternatively, remove `--auto-update` from `rook.service`'s `ExecStart`, run
-`sudo systemctl daemon-reload`, and restart `rook.service`. Keep
-`--managed-updates` to allow owner-requested updates. A later installer run
+Alternatively, add `--manual-updates` to `rook.service`'s `ExecStart`, run
+`sudo systemctl daemon-reload`, and restart `rook.service`. A later installer run
 without `--manual-updates` enables automatic patch updates again.
 
 ## Release

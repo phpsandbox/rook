@@ -17,8 +17,8 @@ const SocketPath = "/run/rook/update.sock"
 
 var errUpdateDeferred = errors.New("agent busy or not connected")
 
-// Coordinator excludes updates and host commands from one another. It is
-// exposed only when the running daemon enables managed or automatic updates.
+// Coordinator excludes updates and host commands from one another and exposes
+// owner requests and the automatic-update policy to the privileged helper.
 type Coordinator struct {
 	mu                      sync.Mutex
 	version                 string
@@ -74,7 +74,7 @@ func (c *Coordinator) Serve(ctx context.Context, path string) (func(), error) {
 		}
 		if connection, err := net.DialTimeout("unix", path, time.Second); err == nil {
 			connection.Close()
-			return nil, fmt.Errorf("another auto-update daemon is already listening")
+			return nil, fmt.Errorf("another update coordinator is already listening")
 		}
 		if err := os.Remove(path); err != nil {
 			return nil, err
