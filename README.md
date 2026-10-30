@@ -112,6 +112,9 @@ Rerunning the installer without the flag also disables them.
 
 ## Release
 
+The release workflow can also be dispatched against an existing version tag.
+Dispatches against branches do not build or publish release assets.
+
 Tags named `v*` run the test suite, build Linux `amd64` and `arm64` binaries,
 scan source and binaries for known vulnerabilities, generate mandatory SHA-256
 checksums and signed build attestations, and publish both architectures together
