@@ -21,7 +21,6 @@ Options:
   --control-plane URL  Control plane websocket URL (required for fresh install)
   --version VERSION    Install a specific version, for example v0.1.0 (default: latest)
   --manual-updates     Require owner approval for patch updates (automatic updates disabled)
-  --auto-update        Enable automatic patch updates (default)
   --uninstall          Remove Rook and its service
   --purge              With --uninstall, also remove configuration, state, and the rook user
   -h, --help           Show this help
@@ -50,7 +49,6 @@ while [[ $# -gt 0 ]]; do
     --control-plane) CONTROL_PLANE="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
     --manual-updates) AUTO_UPDATE=false; shift ;;
-    --auto-update) AUTO_UPDATE=true; shift ;;
     --uninstall) UNINSTALL=true; shift ;;
     --purge) PURGE=true; shift ;;
     -h|--help) usage ;;
