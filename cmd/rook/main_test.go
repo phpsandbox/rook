@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"github.com/phpsandbox/rook/internal/host"
 	"net/http"
 	"net/http/httptest"
@@ -91,7 +92,7 @@ func TestDataReconnectCancelsActiveAndQueuedHTTPRequests(t *testing.T) {
 	defer client.Close()
 	first := <-accepted
 	defer first.CloseNow()
-	relay := agent.NewRelayManager(agent.NewProxy(bindings), client)
+	relay := agent.NewRelayManager(agent.NewProxy(savedTestBindings{bindings}), client)
 	done := make(chan struct{})
 	go func() { runRelayLoop(ctx, client, relay); close(done) }()
 	defer func() { cancel(); client.Close(); <-done }()
@@ -209,4 +210,16 @@ func TestSlowLogDeliveryDoesNotDelayDurableTerminalRecord(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("log delivery prevented terminal record")
 	}
+}
+
+type savedTestBindings struct {
+	*host.Bindings
+}
+
+func (s savedTestBindings) Resolve(_ context.Context, id string) (host.Binding, error) {
+	binding, ok := s.Get(id)
+	if !ok {
+		return host.Binding{}, fmt.Errorf("deployment %s not found", id)
+	}
+	return binding, nil
 }

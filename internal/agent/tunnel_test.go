@@ -49,7 +49,7 @@ func TestRelayManagerStreamsHTTPRequestAndResponseBytes(t *testing.T) {
 	}
 
 	sender := newRecordingTunnelSender()
-	manager := NewRelayManager(NewProxy(state), sender)
+	manager := NewRelayManager(NewProxy(savedTestBindings{state}), sender)
 	ctx := context.Background()
 
 	manager.Handle(ctx, RelayFrame{
@@ -129,7 +129,7 @@ func TestRelayManagerProxiesGETWithoutRequestBodyStream(t *testing.T) {
 	}
 
 	sender := newRecordingTunnelSender()
-	manager := NewRelayManager(NewProxy(state), sender)
+	manager := NewRelayManager(NewProxy(savedTestBindings{state}), sender)
 	manager.Handle(context.Background(), RelayFrame{
 		Protocol:     RelayProtocol,
 		Type:         RelayFrameOpen,

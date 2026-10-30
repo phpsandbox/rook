@@ -53,7 +53,7 @@ func TestRelayManagerProxiesWebSocketFrames(t *testing.T) {
 	}
 
 	sender := newRecordingTunnelSender()
-	manager := NewRelayManager(NewProxy(state), sender)
+	manager := NewRelayManager(NewProxy(savedTestBindings{state}), sender)
 	ctx := context.Background()
 
 	manager.Handle(ctx, RelayFrame{
