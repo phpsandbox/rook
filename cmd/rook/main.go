@@ -76,7 +76,9 @@ func run(ctx context.Context, cfg agent.Config) error {
 	if err := executor.Recover(); err != nil {
 		return fmt.Errorf("recover operations: %w", err)
 	}
-	proxy := agent.NewProxy(state)
+	runtimeBindings := host.NewRuntimeBindings(state)
+	defer runtimeBindings.Close()
+	proxy := agent.NewProxy(runtimeBindings)
 	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token, cfg.AllowInsecureControlPlane)
 	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token, cfg.AllowInsecureControlPlane)
 	relay := agent.NewRelayManager(proxy, dataWS)
