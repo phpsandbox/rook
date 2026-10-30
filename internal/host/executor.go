@@ -19,6 +19,9 @@ type Executor struct {
 	Directory string
 	Bindings  *Bindings
 	mu        sync.Mutex
+
+	unpersistedMu sync.Mutex
+	unpersisted   map[string]Result
 }
 
 func (e *Executor) operationPath(id string) (string, error) {
@@ -33,11 +36,17 @@ func (e *Executor) Status(id string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	e.unpersistedMu.Lock()
+	result, exists := e.unpersisted[id]
+	e.unpersistedMu.Unlock()
+	if exists {
+		return result, nil
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Result{}, err
 	}
-	var result Result
 	err = json.Unmarshal(data, &result)
 	return result, err
 }
@@ -69,6 +78,13 @@ func (e *Executor) Recover() error {
 }
 
 func (e *Executor) Execute(ctx context.Context, request Request, onOutput func(string)) (Result, error) {
+	if request.Action != "info" && request.Action != "read" && request.Action != "binding.read" {
+		if _, err := os.Stat(filepath.Join(e.Directory, "recovery-fence")); err == nil {
+			return Result{}, fmt.Errorf("host mutations are fenced for independent recovery; reconcile interrupted operations before removing recovery-fence")
+		} else if !os.IsNotExist(err) {
+			return Result{}, fmt.Errorf("inspect recovery fence: %w", err)
+		}
+	}
 	if request.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(request.TimeoutSeconds)*time.Second)
@@ -96,7 +112,21 @@ func (e *Executor) Execute(ctx context.Context, request Request, onOutput func(s
 		result.Status = "completed"
 	}
 	if err := saveResult(path, result); err != nil {
-		return Result{}, err
+		// The effect has ended. A journal write failure must not leave status
+		// readers polling its earlier running record or permit a replay.
+		message := fmt.Sprintf("persist terminal operation result: %v", err)
+		if result.Status == "completed" {
+			result.Status = "interrupted"
+			result.Error = message + "; inspect effects before retrying"
+		} else {
+			result.Error += "; " + message
+		}
+		e.unpersistedMu.Lock()
+		if e.unpersisted == nil {
+			e.unpersisted = make(map[string]Result)
+		}
+		e.unpersisted[request.ID] = result
+		e.unpersistedMu.Unlock()
 	}
 	return result, nil
 }

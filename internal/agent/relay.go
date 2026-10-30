@@ -383,7 +383,7 @@ func (m *RelayManager) runHTTPRequest(frame RelayFrame, stream *relayStream) {
 
 func (m *RelayManager) runWebSocket(frame RelayFrame, stream *relayStream) {
 	defer m.releaseStream(stream)
-	targetURL, err := m.proxy.WebSocketURL(frame.DeploymentID, frame.Path)
+	targetURL, err := m.proxy.WebSocketURL(stream.ctx, frame.DeploymentID, frame.Path)
 	if err != nil {
 		m.failStream(stream, err)
 		return

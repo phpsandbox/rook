@@ -53,7 +53,7 @@ func TestProxyOpenHTTPPreservesHeaderPairsAndBinaryBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := NewProxy(state).OpenHTTP(
+	resp, err := NewProxy(savedTestBindings{state}).OpenHTTP(
 		context.Background(),
 		"deployment-1",
 		http.MethodPost,
@@ -291,7 +291,7 @@ func proxyForTestServers(t *testing.T, servers ...*httptest.Server) *Proxy {
 			t.Fatal(err)
 		}
 	}
-	return NewProxy(state)
+	return NewProxy(savedTestBindings{state})
 }
 
 func TestProxyOpenHTTPReturnsRedirectToBrowser(t *testing.T) {
@@ -316,7 +316,7 @@ func TestProxyOpenHTTPReturnsRedirectToBrowser(t *testing.T) {
 	if err := state.Set("deployment-1", host.Binding{Port: port}); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := NewProxy(state).OpenHTTP(context.Background(), "deployment-1", http.MethodPost, "/weather", nil, strings.NewReader("city=Berlin"))
+	resp, err := NewProxy(savedTestBindings{state}).OpenHTTP(context.Background(), "deployment-1", http.MethodPost, "/weather", nil, strings.NewReader("city=Berlin"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -326,5 +326,116 @@ func TestProxyOpenHTTPReturnsRedirectToBrowser(t *testing.T) {
 	}
 	if resp.Header.Get("Set-Cookie") != "session=updated; Path=/; HttpOnly" {
 		t.Fatal("redirect session cookie was lost")
+	}
+}
+
+// Transport tests use explicit test origins; runtime port discovery is covered in host.
+type savedTestBindings struct {
+	*host.Bindings
+}
+
+func (s savedTestBindings) Resolve(_ context.Context, id string) (host.Binding, error) {
+	binding, ok := s.Get(id)
+	if !ok {
+		return host.Binding{}, fmt.Errorf("deployment %s not found", id)
+	}
+	return binding, nil
+}
+
+type testBindingResolver func(context.Context, string) (host.Binding, error)
+
+func (resolve testBindingResolver) Resolve(ctx context.Context, id string) (host.Binding, error) {
+	return resolve(ctx, id)
+}
+
+func TestProxyResolvesBindingForEachHTTPAndWebSocketRequest(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "first release")
+	}))
+	t.Cleanup(first.Close)
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "current release")
+	}))
+	t.Cleanup(second.Close)
+	var resolutions atomic.Int64
+	var activePort atomic.Int64
+	portFor := func(server *httptest.Server) int64 {
+		t.Helper()
+		_, portString, err := net.SplitHostPort(strings.TrimPrefix(server.URL, "http://"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		port, err := strconv.ParseInt(portString, 10, 32)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return port
+	}
+	activePort.Store(portFor(first))
+	proxy := NewProxy(testBindingResolver(func(ctx context.Context, id string) (host.Binding, error) {
+		resolutions.Add(1)
+		if id != "app" {
+			return host.Binding{}, fmt.Errorf("unexpected deployment %q", id)
+		}
+		return host.Binding{Port: int(activePort.Load())}, ctx.Err()
+	}))
+
+	response, err := proxy.OpenHTTP(context.Background(), "app", http.MethodGet, "/", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = response.Body.Close() })
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || string(body) != "first release" {
+		t.Fatalf("first request: %q, %v", body, err)
+	}
+
+	activePort.Store(portFor(second))
+	current, err := proxy.OpenHTTP(context.Background(), "app", http.MethodGet, "/", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = current.Body.Close() })
+	body, err = io.ReadAll(current.Body)
+	_ = current.Body.Close()
+	if err != nil || string(body) != "current release" {
+		t.Fatalf("request after port change: %q, %v", body, err)
+	}
+
+	websocketURL, err := proxy.WebSocketURL(context.Background(), "app", "/socket")
+	if err != nil || websocketURL != "ws"+strings.TrimPrefix(second.URL, "http")+"/socket" {
+		t.Fatalf("WebSocket after port change: %q, %v", websocketURL, err)
+	}
+	if resolutions.Load() != 3 {
+		t.Fatalf("binding inspections = %d, want 3", resolutions.Load())
+	}
+}
+
+type trackedRequestBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackedRequestBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestProxyInspectionFailureClosesUploadAndReleasesCapacity(t *testing.T) {
+	inspectionError := errors.New("Docker unavailable")
+	var inspections atomic.Int64
+	proxy := NewProxy(testBindingResolver(func(context.Context, string) (host.Binding, error) {
+		inspections.Add(1)
+		return host.Binding{}, inspectionError
+	}))
+	body := &trackedRequestBody{Reader: strings.NewReader("do not replay")}
+
+	response, err := proxy.OpenHTTP(context.Background(), "app", http.MethodPost, "/", nil, body)
+	if !errors.Is(err, inspectionError) || response != nil {
+		t.Fatalf("inspection failure: %+v, %v", response, err)
+	}
+	if !body.closed || len(proxy.requests) != 0 || inspections.Load() != 1 {
+		t.Fatalf("closed=%v, slots=%d, inspections=%d", body.closed, len(proxy.requests), inspections.Load())
 	}
 }

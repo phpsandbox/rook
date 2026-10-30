@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/url"
@@ -19,11 +20,35 @@ import (
 var version = "dev"
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "releases" {
+		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer cancel()
+		if err := runReleases(ctx, os.Args[2:], os.Stdout, os.Stderr); err != nil {
+			if !errors.Is(err, flag.ErrHelp) {
+				fmt.Fprintf(os.Stderr, "error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		return
+	}
+	flag.Usage = func() {
+		fmt.Fprintln(os.Stderr, "Usage: rook [options] | rook releases <list|inspect|restore> [options]")
+		flag.PrintDefaults()
+	}
+
 	configPath := flag.String("config", agent.DefaultConfigPath, "path to rook config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	autoUpdate := flag.Bool("auto-update", false, "opt into automatic patch updates (requires the systemd installer)")
 	applyUpdate := flag.Bool("apply-auto-update", false, "run the privileged systemd update helper")
+	showCapabilities := flag.Bool("capabilities", false, "print supported capabilities without connecting")
 	flag.Parse()
+	if *showCapabilities {
+		if err := json.NewEncoder(os.Stdout).Encode([]string{host.Capability, host.RecoveryFenceCapability}); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *showVersion {
 		fmt.Println(version)
@@ -67,7 +92,9 @@ func run(ctx context.Context, cfg agent.Config, autoUpdate bool) error {
 	if err := executor.Recover(); err != nil {
 		return fmt.Errorf("recover operations: %w", err)
 	}
-	proxy := agent.NewProxy(state)
+	runtimeBindings := host.NewRuntimeBindings(state)
+	defer runtimeBindings.Close()
+	proxy := agent.NewProxy(runtimeBindings)
 	controlWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "control"), cfg.Token, cfg.AllowInsecureControlPlane)
 	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token, cfg.AllowInsecureControlPlane)
 	relay := agent.NewRelayManager(proxy, dataWS)
@@ -138,7 +165,7 @@ func sendHello(ctx context.Context, ws *agent.WSClient, serverID string, deploym
 		Type:         "hello",
 		ServerID:     serverID,
 		Version:      version,
-		Capabilities: []string{host.Capability},
+		Capabilities: []string{host.Capability, host.RecoveryFenceCapability},
 		Deployments:  deployments,
 	})
 }

@@ -19,14 +19,18 @@ const maxQueuedHTTPRequests = 1024
 var errHTTPRelayOverloaded = errors.New("HTTP relay at capacity")
 
 type Proxy struct {
-	state           *host.Bindings
+	state           BindingResolver
 	client          *http.Client
 	webSocketClient *http.Client
 	requests        chan struct{}
 	waiting         chan struct{}
 }
 
-func NewProxy(state *host.Bindings) *Proxy {
+type BindingResolver interface {
+	Resolve(context.Context, string) (host.Binding, error)
+}
+
+func NewProxy(state BindingResolver) *Proxy {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConns = 256
 	transport.MaxIdleConnsPerHost = maxConcurrentHTTPRequests
@@ -53,9 +57,29 @@ func NewProxy(state *host.Bindings) *Proxy {
 }
 
 func (p *Proxy) OpenHTTP(ctx context.Context, deploymentID string, method string, path string, headers []HeaderPair, body io.Reader) (*http.Response, error) {
-	ds, ok := p.state.Get(deploymentID)
-	if !ok {
-		return nil, fmt.Errorf("deployment %s not found", deploymentID)
+	// The HTTP client owns the body after dispatch; close it ourselves when
+	// admission or runtime inspection fails before it can take ownership.
+	dispatched := false
+	defer func() {
+		if !dispatched {
+			if closer, ok := body.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
+	}()
+	// Admission also bounds concurrent Docker inspections.
+	if err := p.acquire(ctx, body != nil && body != http.NoBody); err != nil {
+		return nil, err
+	}
+	release := true
+	defer func() {
+		if release {
+			<-p.requests
+		}
+	}()
+	ds, err := p.state.Resolve(ctx, deploymentID)
+	if err != nil {
+		return nil, err
 	}
 
 	targetURL := fmt.Sprintf("http://127.0.0.1:%d%s", ds.Port, normalizeProxyPath(path))
@@ -82,17 +106,13 @@ func (p *Proxy) OpenHTTP(ctx context.Context, deploymentID string, method string
 		req.Header.Add(name, value)
 	}
 
-	// Keep the slot until the caller closes the response, so large downloads
-	// cannot accumulate unbounded upstream socket buffers across deployments.
-	if err := p.acquire(ctx, body != http.NoBody); err != nil {
-		_ = req.Body.Close()
-		return nil, err
-	}
+	dispatched = true
 	resp, err := p.client.Do(req)
 	if err != nil {
-		<-p.requests
 		return nil, fmt.Errorf("proxy request failed: %w", err)
 	}
+	// Keep the slot until the caller closes the response.
+	release = false
 	resp.Body = &proxyResponseBody{ReadCloser: resp.Body, release: func() { <-p.requests }}
 	return resp, nil
 }
@@ -147,10 +167,10 @@ func (b *proxyResponseBody) Close() error {
 	return b.err
 }
 
-func (p *Proxy) WebSocketURL(deploymentID string, path string) (string, error) {
-	ds, ok := p.state.Get(deploymentID)
-	if !ok {
-		return "", fmt.Errorf("deployment %s not found", deploymentID)
+func (p *Proxy) WebSocketURL(ctx context.Context, deploymentID string, path string) (string, error) {
+	ds, err := p.state.Resolve(ctx, deploymentID)
+	if err != nil {
+		return "", err
 	}
 	return fmt.Sprintf("ws://127.0.0.1:%d%s", ds.Port, normalizeProxyPath(path)), nil
 }
