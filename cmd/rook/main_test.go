@@ -181,7 +181,7 @@ func TestCorruptOperationStateNeverConnects(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir}, false)
+	err := run(ctx, agent.Config{ServerID: "test", Token: "test", ControlPlane: server.URL, StateDir: dir}, false, false)
 	if err == nil || !strings.Contains(err.Error(), "recover operations") || requests.Load() != 0 {
 		t.Fatalf("corrupt host connected: %v, requests=%d", err, requests.Load())
 	}

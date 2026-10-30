@@ -161,23 +161,11 @@ func selectRelease(releases []release, current, failed, arch string) (release, b
 	if !ok {
 		return release{}, false
 	}
-	blocked := map[string]bool{}
-	for _, tag := range strings.Fields(failed) {
-		blocked[tag] = true
-	}
 	var selected release
 	best := version[2]
 	for _, candidate := range releases {
 		next, ok := parseVersion(candidate.Tag)
-		if !ok || candidate.Draft || candidate.Prerelease || blocked[candidate.Tag] || next[0] != version[0] || next[1] != version[1] || next[2] <= best {
-			continue
-		}
-		names := map[string]bool{}
-		for _, asset := range candidate.Assets {
-			names[asset.Name] = true
-		}
-		name := "rook-linux-" + arch
-		if !names[name] || !names[name+".sha256"] || !names[name+".sigstore.json"] {
+		if !ok || !eligibleRelease(candidate, failed, arch) || next[0] != version[0] || next[1] != version[1] || next[2] <= best {
 			continue
 		}
 		selected, best = candidate, next[2]
@@ -236,13 +224,15 @@ func (u *Updater) stage(ctx context.Context, candidate release) (string, error) 
 }
 
 type pendingUpdate struct {
-	Version  string `json:"version"`
-	Previous string `json:"previous"`
+	Version   string     `json:"version"`
+	Previous  string     `json:"previous"`
+	Operation *Operation `json:"operation,omitempty"`
+	Outcome   string     `json:"outcome,omitempty"`
 }
 
 // Apply is run by the root systemd helper. A missing opt-in socket means no
 // network request is made. The journal recovers an interrupted replacement.
-func (u *Updater) Apply(ctx context.Context) error {
+func (u *Updater) Apply(ctx context.Context) (applyErr error) {
 	if err := os.MkdirAll(u.directory, 0700); err != nil {
 		return err
 	}
@@ -283,6 +273,43 @@ func (u *Updater) Apply(ctx context.Context) error {
 	if _, ok := parseVersion(status.Version); !ok {
 		return nil
 	} // Development builds never self-update.
+	manual := status.Operation != nil && status.Operation.Pending()
+	if status.Busy {
+		if manual {
+			return reportResult(ctx, daemon, *status.Operation, "waiting")
+		}
+		return nil
+	}
+	if !manual {
+		if !status.AutoUpdate {
+			return nil
+		}
+		checked, err := os.Stat(filepath.Join(u.directory, "last-check"))
+		if err == nil && time.Since(checked.ModTime()) < 24*time.Hour {
+			return nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	replacementStarted := false
+	if manual {
+		defer func() {
+			if applyErr != nil && !replacementStarted {
+				reportCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				applyErr = errors.Join(applyErr, reportResult(reportCtx, daemon, *status.Operation, "failed"))
+			}
+		}()
+		if err := reportResult(ctx, daemon, *status.Operation, "verifying"); err != nil {
+			return err
+		}
+	}
+	if !manual {
+		if err := durableWrite(filepath.Join(u.directory, "last-check"), []byte(time.Now().UTC().Format(time.RFC3339)), 0600); err != nil {
+			return err
+		}
+	}
 	data, err := u.fetch(ctx, u.api, 4<<20)
 	if err != nil {
 		return err
@@ -295,7 +322,14 @@ func (u *Updater) Apply(ctx context.Context) error {
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
+
 	candidate, ok := selectRelease(releases, status.Version, strings.TrimSpace(string(failed)), u.arch)
+	if manual {
+		candidate, ok = selectRequestedRelease(releases, status.Version, status.Operation.TargetVersion, strings.TrimSpace(string(failed)), u.arch)
+		if !ok {
+			return errors.New("requested release is unavailable or ineligible")
+		}
+	}
 	if !ok {
 		return nil
 	}
@@ -308,7 +342,15 @@ func (u *Updater) Apply(ctx context.Context) error {
 	// Downloads and cryptographic verification happen before interrupting traffic.
 	if err := daemonAction(ctx, daemon, "prepare"); err != nil {
 		if errors.Is(err, errUpdateDeferred) {
-			fmt.Println("rook auto-update: agent busy or disconnected; retrying at the next check")
+			fmt.Println("rook update: agent busy or disconnected; retrying at the next check")
+			if !manual {
+				if err := os.Remove(filepath.Join(u.directory, "last-check")); err != nil {
+					return err
+				}
+			}
+			if manual {
+				return reportResult(ctx, daemon, *status.Operation, "waiting")
+			}
 			return nil
 		}
 		return fmt.Errorf("update deferred: %w", err)
@@ -331,10 +373,20 @@ func (u *Updater) Apply(ctx context.Context) error {
 	if err := durableWrite(filepath.Join(u.directory, "previous"), old, 0755); err != nil {
 		return err
 	}
-	journal, _ := json.Marshal(pendingUpdate{Version: candidate.Tag, Previous: status.Version})
+	pending := pendingUpdate{Version: candidate.Tag, Previous: status.Version, Operation: status.Operation}
+	if !manual {
+		pending.Operation = nil
+	}
+	if manual {
+		if err := reportResult(ctx, daemon, *status.Operation, "installing"); err != nil {
+			return err
+		}
+	}
+	journal, _ := json.Marshal(pending)
 	if err := durableWrite(filepath.Join(u.directory, "pending.json"), journal, 0600); err != nil {
 		return err
 	}
+	replacementStarted = true
 	if err := os.Chmod(staged, 0755); err != nil {
 		return err
 	}
@@ -349,9 +401,9 @@ func (u *Updater) Apply(ctx context.Context) error {
 	defer cancel()
 	if err := u.restart(finishCtx); err == nil && u.health(finishCtx, candidate.Tag) {
 		fmt.Printf("rook auto-update: %s connected and healthy\n", candidate.Tag)
-		return u.clearPending()
+		return u.complete(finishCtx, pending, "succeeded")
 	}
-	if err := u.rollback(finishCtx, pendingUpdate{Version: candidate.Tag, Previous: status.Version}); err != nil {
+	if err := u.rollback(finishCtx, pending); err != nil {
 		return err
 	}
 	return fmt.Errorf("update to %s failed health check; restored %s", candidate.Tag, status.Version)
@@ -375,8 +427,11 @@ func (u *Updater) recover(ctx context.Context) error {
 	if _, ok := parseVersion(pending.Previous); !ok {
 		return errors.New("invalid previous update version")
 	}
+	if pending.Outcome == "succeeded" || pending.Outcome == "rolled_back" {
+		return u.complete(ctx, pending, pending.Outcome)
+	}
 	if u.health(ctx, pending.Version) {
-		return u.clearPending()
+		return u.complete(ctx, pending, "succeeded")
 	}
 	return u.rollback(ctx, pending)
 }
@@ -403,7 +458,7 @@ func (u *Updater) rollback(ctx context.Context, pending pendingUpdate) error {
 	}
 	// Replacement is now rolled back even if an unrelated network outage keeps
 	// the old agent offline. Do not restart it again at every scheduled check.
-	if err := u.clearPending(); err != nil {
+	if err := u.complete(ctx, pending, "rolled_back"); err != nil {
 		return err
 	}
 	if !u.health(ctx, pending.Previous) {
@@ -453,4 +508,49 @@ func syncDirectory(path string) error {
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func (u *Updater) complete(ctx context.Context, pending pendingUpdate, status string) error {
+	if pending.Operation != nil {
+		pending.Outcome = status
+		data, err := json.Marshal(pending)
+		if err != nil {
+			return err
+		}
+		if err := durableWrite(filepath.Join(u.directory, "pending.json"), data, 0600); err != nil {
+			return err
+		}
+		client := socketClient(u.socket)
+		defer client.CloseIdleConnections()
+		if err := reportResult(ctx, client, *pending.Operation, status); err != nil {
+			return err
+		}
+	}
+	return u.clearPending()
+}
+
+func selectRequestedRelease(releases []release, current, target, failed, arch string) (release, bool) {
+	for _, candidate := range releases {
+		if candidate.Tag == target {
+			return selectRelease([]release{candidate}, current, failed, arch)
+		}
+	}
+	return release{}, false
+}
+
+func eligibleRelease(candidate release, failed, arch string) bool {
+	if candidate.Draft || candidate.Prerelease {
+		return false
+	}
+	for _, blocked := range strings.Fields(failed) {
+		if blocked == candidate.Tag {
+			return false
+		}
+	}
+	names := map[string]bool{}
+	for _, asset := range candidate.Assets {
+		names[asset.Name] = true
+	}
+	name := "rook-linux-" + arch
+	return names[name] && names[name+".sha256"] && names[name+".sigstore.json"]
 }

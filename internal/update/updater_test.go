@@ -61,6 +61,7 @@ func newTestUpdater(t *testing.T, signatureError bool, healthy bool) (*Updater, 
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
 	socket := filepath.Join(socketDir, "agent.sock")
 	gate := NewCoordinator("v0.2.1", func(context.Context) error { return nil }, func() {})
+	gate.autoUpdate = true
 	gate.ControlReady(true)
 	gate.DataReady(true)
 	closeGate, err := gate.Serve(context.Background(), socket)

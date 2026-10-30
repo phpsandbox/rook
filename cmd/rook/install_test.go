@@ -128,3 +128,28 @@ download_binary
 		})
 	}
 }
+
+func TestManagedInstallerDoesNotEnableAutomaticUpdates(t *testing.T) {
+	directory, output, err := installerFixture(t, `
+AUTO_UPDATE_SUPPORTED=true
+write_systemd_unit
+start_service
+`, "--managed-updates")
+	if err != nil {
+		t.Fatalf("installer: %v\n%s", err, output)
+	}
+	unit, err := os.ReadFile(filepath.Join(directory, "units", "rook.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(unit), "--managed-updates") || strings.Contains(string(unit), "--auto-update") {
+		t.Fatalf("managed installation changed automatic consent: %s", unit)
+	}
+	timer, err := os.ReadFile(filepath.Join(directory, "units", "rook-update.timer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(timer), "OnUnitInactiveSec=1min") {
+		t.Fatalf("manual updates do not have a bounded polling interval: %s", timer)
+	}
+}

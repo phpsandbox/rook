@@ -1,6 +1,7 @@
 package update
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,7 @@ const SocketPath = "/run/rook/update.sock"
 var errUpdateDeferred = errors.New("agent busy or not connected")
 
 // Coordinator excludes updates and host commands from one another. It is
-// exposed only when the running daemon explicitly opts into automatic updates.
+// exposed only when the running daemon enables managed or automatic updates.
 type Coordinator struct {
 	mu                      sync.Mutex
 	version                 string
@@ -26,11 +27,16 @@ type Coordinator struct {
 	drain                   func(context.Context) error
 	resume                  func()
 	lease                   *time.Timer
+	operations              *Operations
+	autoUpdate              bool
 }
 
 type Status struct {
-	Version string `json:"version"`
-	Ready   bool   `json:"ready"`
+	Version    string     `json:"version"`
+	Ready      bool       `json:"ready"`
+	Busy       bool       `json:"busy"`
+	AutoUpdate bool       `json:"autoUpdate"`
+	Operation  *Operation `json:"operation,omitempty"`
 }
 
 func NewCoordinator(version string, drain func(context.Context) error, resume func()) *Coordinator {
@@ -87,10 +93,25 @@ func (c *Coordinator) Serve(ctx context.Context, path string) (func(), error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /status", func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
-		status := Status{Version: c.version, Ready: c.control && c.data && !c.draining}
+		status := Status{Version: c.version, Ready: c.control && c.data && !c.draining, AutoUpdate: c.autoUpdate, Busy: c.active != 0}
+		if c.operations != nil {
+			status.Operation = c.operations.Snapshot()
+		}
 		c.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(status)
+	})
+	mux.HandleFunc("POST /result", func(w http.ResponseWriter, r *http.Request) {
+		var result Operation
+		if c.operations == nil || json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&result) != nil {
+			http.Error(w, "invalid update result", http.StatusBadRequest)
+			return
+		}
+		if err := c.operations.Report(result); err != nil {
+			http.Error(w, "update result rejected", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("POST /prepare", func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
@@ -155,6 +176,52 @@ func daemonAction(ctx context.Context, client *http.Client, action string) error
 	}
 	if response.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("agent %s: %s", action, response.Status)
+	}
+	return nil
+}
+
+// Enable must run before serving the socket or starting the connection loops.
+func (c *Coordinator) Enable(directory string, automatic bool) error {
+	operations, err := OpenOperations(directory)
+	if err != nil {
+		return err
+	}
+	c.operations = operations
+	c.autoUpdate = automatic
+	return nil
+}
+
+func (c *Coordinator) Request(id, target string) (Operation, error) {
+	if c.operations == nil {
+		return Operation{}, errors.New("managed updates are disabled")
+	}
+	return c.operations.Request(id, target, c.version)
+}
+
+func (c *Coordinator) Operation() *Operation {
+	if c.operations == nil {
+		return nil
+	}
+	return c.operations.Snapshot()
+}
+
+func reportResult(ctx context.Context, client *http.Client, operation Operation, status string) error {
+	operation.Status = status
+	data, err := json.Marshal(operation)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://rook/result", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("report update result: %s", response.Status)
 	}
 	return nil
 }

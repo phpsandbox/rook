@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -38,6 +39,7 @@ func main() {
 
 	configPath := flag.String("config", agent.DefaultConfigPath, "path to rook config file")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	managedUpdates := flag.Bool("managed-updates", false, "allow owner-requested verified updates through the systemd helper")
 	autoUpdate := flag.Bool("auto-update", false, "opt into automatic patch updates (requires the systemd installer)")
 	applyUpdate := flag.Bool("apply-auto-update", false, "run the privileged systemd update helper")
 	showCapabilities := flag.Bool("capabilities", false, "print supported capabilities without connecting")
@@ -55,8 +57,8 @@ func main() {
 		return
 	}
 	if *applyUpdate {
-		if os.Geteuid() != 0 || *autoUpdate {
-			fmt.Fprintln(os.Stderr, "error: --apply-auto-update requires root and cannot be combined with --auto-update")
+		if os.Geteuid() != 0 || *autoUpdate || *managedUpdates {
+			fmt.Fprintln(os.Stderr, "error: --apply-auto-update requires root and cannot be combined with update opt-in flags")
 			os.Exit(1)
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -77,13 +79,14 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	if err := run(ctx, cfg, *autoUpdate); err != nil {
+	if err := run(ctx, cfg, *autoUpdate, *managedUpdates); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context, cfg agent.Config, autoUpdate bool) error {
+func run(ctx context.Context, cfg agent.Config, autoUpdate bool, managedUpdates bool) error {
+	enabled := autoUpdate || managedUpdates
 	state := host.NewBindings(cfg.StateDir)
 	if err := state.Load(); err != nil {
 		return fmt.Errorf("load bindings: %w", err)
@@ -99,7 +102,10 @@ func run(ctx context.Context, cfg agent.Config, autoUpdate bool) error {
 	dataWS := agent.NewWSClient(agentPlaneURL(cfg.ControlPlane, cfg.ServerID, "data"), cfg.Token, cfg.AllowInsecureControlPlane)
 	relay := agent.NewRelayManager(proxy, dataWS)
 	coordinator := update.NewCoordinator(version, relay.Drain, relay.Resume)
-	if autoUpdate {
+	if enabled {
+		if err := coordinator.Enable(cfg.StateDir, autoUpdate); err != nil {
+			return err
+		}
 		closeUpdates, err := coordinator.Serve(ctx, update.SocketPath)
 		if err != nil {
 			return err
@@ -126,6 +132,8 @@ func run(ctx context.Context, cfg agent.Config, autoUpdate bool) error {
 	coordinator.DataReady(true)
 
 	fmt.Println("connected, waiting for commands...")
+	stopTelemetry := startTelemetry(ctx, controlWS, coordinator, autoUpdate, enabled)
+	defer stopTelemetry()
 
 	go runRelayLoop(ctx, dataWS, relay, coordinator)
 
@@ -147,6 +155,10 @@ func run(ctx context.Context, cfg agent.Config, autoUpdate bool) error {
 			continue
 		}
 
+		if msg.Type == "agent.update" {
+			handleAgentUpdate(ctx, msg, controlWS, coordinator)
+			continue
+		}
 		if !coordinator.BeginCommand() {
 			deliveryCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			_ = controlWS.Send(deliveryCtx, agent.OutboundMessage{Type: "result", CommandID: msg.CommandID, Error: "agent updating; retry later"})
@@ -264,4 +276,55 @@ func executeHostCommand(ctx context.Context, executor *host.Executor, request ho
 	})
 	close(logs)
 	return result, err
+}
+
+func startTelemetry(parent context.Context, ws *agent.WSClient, coordinator *update.Coordinator, automatic, managed bool) func() {
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			err := ws.Send(ctx, agent.OutboundMessage{
+				Type: "heartbeat", Version: version,
+				Agent: &agent.AgentInfo{OS: runtime.GOOS, Architecture: runtime.GOARCH, ManagedUpdates: managed, AutoUpdate: automatic, Operation: coordinator.Operation()},
+			})
+			if err != nil && ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "agent heartbeat delivery failed")
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	return func() { cancel(); <-done }
+}
+
+func handleAgentUpdate(ctx context.Context, msg agent.InboundMessage, ws *agent.WSClient, coordinator *update.Coordinator) {
+	var request struct {
+		ID            string `json:"id"`
+		TargetVersion string `json:"targetVersion"`
+	}
+	err := json.Unmarshal(msg.Payload, &request)
+	var operation update.Operation
+	if err == nil {
+		operation, err = coordinator.Request(request.ID, request.TargetVersion)
+	}
+	result := agent.OutboundMessage{Type: "result", CommandID: msg.CommandID}
+	if err != nil {
+		result.Error = err.Error()
+	} else {
+		result.Success = true
+		result.Result, err = json.Marshal(operation)
+		if err != nil {
+			result.Success = false
+			result.Error = err.Error()
+		}
+	}
+	if err := ws.Send(ctx, result); err != nil {
+		fmt.Fprintln(os.Stderr, "agent update acknowledgement delivery failed")
+	}
 }

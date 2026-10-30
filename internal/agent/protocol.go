@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"github.com/phpsandbox/rook/internal/host"
+	"github.com/phpsandbox/rook/internal/update"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
@@ -22,9 +23,18 @@ func (m InboundMessage) DecodeHostRequest() (host.Request, error) {
 	return request, msgpack.Unmarshal(m.messagePackPayload, &request)
 }
 
+type AgentInfo struct {
+	OS             string            `json:"os"`
+	Architecture   string            `json:"architecture"`
+	ManagedUpdates bool              `json:"managedUpdates"`
+	AutoUpdate     bool              `json:"autoUpdate"`
+	Operation      *update.Operation `json:"operation,omitempty"`
+}
+
 type OutboundMessage struct {
-	Type      string `json:"type"`
-	CommandID string `json:"commandId,omitempty"`
+	Agent     *AgentInfo `json:"agent,omitempty"`
+	Type      string     `json:"type"`
+	CommandID string     `json:"commandId,omitempty"`
 
 	// hello
 	ServerID     string   `json:"serverId,omitempty"`

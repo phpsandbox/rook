@@ -20,6 +20,7 @@ Options:
   --token TOKEN        Authentication token (required for fresh install)
   --control-plane URL  Control plane websocket URL (required for fresh install)
   --version VERSION    Install a specific version, for example v0.1.0 (default: latest)
+  --managed-updates    Allow owner-requested updates (automatic updates stay disabled)
   --auto-update        Opt into automatic updates within the installed minor version
   --uninstall          Remove Rook and its service
   --purge              With --uninstall, also remove configuration, state, and the rook user
@@ -40,6 +41,7 @@ CONTROL_PLANE=""
 VERSION="latest"
 UNINSTALL=false
 PURGE=false
+MANAGED_UPDATES=false
 AUTO_UPDATE=false
 AUTO_UPDATE_SUPPORTED=false
 
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="${2:-}"; shift 2 ;;
     --control-plane) CONTROL_PLANE="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
+    --managed-updates) MANAGED_UPDATES=true; shift ;;
     --auto-update) AUTO_UPDATE=true; shift ;;
     --uninstall) UNINSTALL=true; shift ;;
     --purge) PURGE=true; shift ;;
@@ -173,6 +176,10 @@ download_binary() {
     err "selected Rook version does not support --auto-update"
   fi
 
+  if [[ "$MANAGED_UPDATES" == "true" ]] && ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -managed-updates'; then
+    err "selected Rook version does not support --managed-updates"
+  fi
+
   local staged
   staged="$(mktemp "${INSTALL_DIR}/.rook-install.XXXXXX")"
   install -m 0755 "$binary_tmp" "$staged"
@@ -198,8 +205,11 @@ YAML
 
 write_systemd_unit() {
   local auto_update_arg=""
+  if [[ "$MANAGED_UPDATES" == "true" ]]; then
+    auto_update_arg=" --managed-updates"
+  fi
   if [[ "$AUTO_UPDATE" == "true" ]]; then
-    auto_update_arg=" --auto-update"
+    auto_update_arg="${auto_update_arg} --auto-update"
   fi
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 [Unit]
@@ -246,10 +256,9 @@ UNIT
 Description=Check opted-in Rook agents for patch updates daily
 
 [Timer]
-OnBootSec=5min
-OnCalendar=daily
-Persistent=true
-RandomizedDelaySec=1h
+OnBootSec=1min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=15s
 Unit=rook-update.service
 
 [Install]

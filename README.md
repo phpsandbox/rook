@@ -58,14 +58,37 @@ curl -fsSL https://install.phpsandbox.io/rook | sudo bash -s -- --uninstall
 
 Add `--purge` to also remove the stored token, deployment state, and system user.
 
+## Managed updates
+
+Add `--managed-updates` to the installer command to allow the server owner to
+request an exact stable release through the authenticated control plane. This
+permission is separate from automatic updates and does not enable them.
+
+Rook persists the request before acknowledging it, reports progress through
+heartbeats, and retains the outcome across restarts. Requests are idempotent;
+a second update cannot replace an active request. Targets must be newer stable
+versions with binaries, checksums, and signed provenance for this architecture.
+Managed updates stay within the installed minor release line. Changes of release
+line require a manual installation upgrade. Arbitrary download URLs, commands,
+and downgrades are rejected.
+
+The installer provides a root-owned systemd helper. It checks for requests
+approximately once a minute; the daemon does not receive permission to run
+arbitrary privileged commands. The helper independently verifies releases and
+uses the same drain, replacement, and rollback path as automatic updates.
+
+Older installations require a one-time installer upgrade to enable managed
+updates. Run without either update flag to disable remote and automatic updates.
+
 ## Automatic updates
 
 Automatic updates are disabled by default. Add `--auto-update` to the install
 command to start the daemon with that flag. Release signature verification is
 built into Rook; no additional tool or GitHub login is required.
 
-The installer provides a daily systemd update check with a randomized delay.
-It makes no release requests when the daemon runs without `--auto-update`.
+The helper checks for automatic updates at most once every 24 hours.
+Without `--auto-update`, release requests are made only for an explicit managed
+update request.
 Only newer stable patch releases within the installed minor version are eligible:
 for example, `v0.2.1` can update to `v0.2.2`, but not `v0.3.0`. Development
 builds do not update automatically.
