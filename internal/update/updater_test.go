@@ -15,34 +15,32 @@ import (
 	"testing"
 )
 
-func makeRelease(tag string) release {
-	r := release{Tag: tag}
-	for _, suffix := range []string{"", ".sha256", ".sigstore.json"} {
-		name := "rook-linux-amd64" + suffix
-		r.Assets = append(r.Assets, struct {
-			Name string `json:"name"`
-			URL  string `json:"browser_download_url"`
-		}{name, "https://github.com/" + repository + "/releases/download/" + tag + "/" + name})
+func TestPatchUpgradeGuard(t *testing.T) {
+	for _, scenario := range []struct {
+		current, target string
+		allowed         bool
+	}{
+		{"v0.2.1", "v0.2.2", true},
+		{"v0.2.1", "v0.3.0", false},
+		{"v0.2.1", "v1.2.2", false},
+		{"v0.2.1", "v0.2.1", false},
+		{"v0.2.1", "v0.2.0", false},
+		{"dev", "v0.2.2", false},
+		{"v0.2.1", "v0.2.2-rc.1", false},
+		{"v0.2.1", "https://example.test/rook", false},
+	} {
+		t.Run(scenario.current+" to "+scenario.target, func(t *testing.T) {
+			if actual := isPatchUpgrade(scenario.current, scenario.target); actual != scenario.allowed {
+				t.Fatalf("upgrade eligibility=%v, want %v", actual, scenario.allowed)
+			}
+		})
 	}
-	return r
 }
 
-func TestSelectReleaseOnlyNewCompleteStablePatches(t *testing.T) {
-	releases := []release{makeRelease("v0.2.0"), makeRelease("v0.2.2"), makeRelease("v0.2.3"), makeRelease("v0.3.0"), makeRelease("v1.2.9"), makeRelease("v0.2.5"), makeRelease("v0.2.6"), makeRelease("v0.2.7"), makeRelease("v0.2.8-rc.1")}
-	releases[5].Prerelease = true
-	releases[6].Draft = true
-	releases[7].Assets = releases[7].Assets[:2]
-	selected, ok := selectRelease(releases, "v0.2.1", "v0.2.3", "amd64")
-	if !ok || selected.Tag != "v0.2.2" {
-		t.Fatalf("selected %+v, %v", selected, ok)
-	}
-	for _, current := range []string{"dev", "v0.2.99", "v0.2.1-rc.1", "v0.02.1", "v0.2.18446744073709551616"} {
-		if _, ok := selectRelease(releases, current, "", "amd64"); ok {
-			t.Fatalf("unexpected update from %q", current)
-		}
-	}
-	if _, ok := selectRelease(releases, "v0.2.1", "", "arm64"); ok {
-		t.Fatal("selected release without architecture assets")
+func requestTestUpdate(t *testing.T, gate *Coordinator) {
+	t.Helper()
+	if _, err := gate.Request(testOperationID, "v0.2.2", "manual"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -61,7 +59,9 @@ func newTestUpdater(t *testing.T, signatureError bool, healthy bool) (*Updater, 
 	t.Cleanup(func() { os.RemoveAll(socketDir) })
 	socket := filepath.Join(socketDir, "agent.sock")
 	gate := NewCoordinator("v0.2.1", func(context.Context) error { return nil }, func() {})
-	gate.autoUpdate = true
+	if err := gate.Enable(directory, true); err != nil {
+		t.Fatal(err)
+	}
 	gate.ControlReady(true)
 	gate.DataReady(true)
 	closeGate, err := gate.Serve(context.Background(), socket)
@@ -71,17 +71,14 @@ func newTestUpdater(t *testing.T, signatureError bool, healthy bool) (*Updater, 
 	t.Cleanup(closeGate)
 	binary := []byte("#!/bin/sh\nprintf '%s\\n' 'v0.2.2'\n")
 	hash := sha256.Sum256(binary)
-	candidate := makeRelease("v0.2.2")
-	metadata, _ := json.Marshal([]release{candidate})
 	data := map[string][]byte{
-		releaseAPI:              metadata,
-		candidate.Assets[0].URL: binary,
-		candidate.Assets[1].URL: []byte(fmt.Sprintf("%x  rook-linux-amd64\n", hash)),
-		candidate.Assets[2].URL: []byte("signed bundle fixture"),
+		releaseAssetURL("v0.2.2", "rook-linux-amd64"):               binary,
+		releaseAssetURL("v0.2.2", "rook-linux-amd64.sha256"):        []byte(fmt.Sprintf("%x  rook-linux-amd64\n", hash)),
+		releaseAssetURL("v0.2.2", "rook-linux-amd64.sigstore.json"): []byte("signed bundle fixture"),
 	}
 	verifies, restarts := new(int), new(int)
 	u := &Updater{
-		binary: filepath.Join(directory, "rook"), directory: directory, socket: socket, api: releaseAPI, arch: "amd64",
+		binary: filepath.Join(directory, "rook"), directory: directory, socket: socket, arch: "amd64",
 		client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 			body, ok := data[r.URL.String()]
 			if !ok {
@@ -112,7 +109,8 @@ func newTestUpdater(t *testing.T, signatureError bool, healthy bool) (*Updater, 
 func TestApplyVerifiedUpdateAndRollback(t *testing.T) {
 	for _, healthy := range []bool{true, false} {
 		t.Run(fmt.Sprint(healthy), func(t *testing.T) {
-			u, _, verifies, restarts := newTestUpdater(t, false, healthy)
+			u, gate, verifies, restarts := newTestUpdater(t, false, healthy)
+			requestTestUpdate(t, gate)
 			err := u.Apply(context.Background())
 			data, readErr := os.ReadFile(u.binary)
 			if readErr != nil {
@@ -152,6 +150,7 @@ func TestApplyRejectsUnverifiedAndBusyUpdates(t *testing.T) {
 	for _, signatureError := range []bool{true, false} {
 		t.Run(fmt.Sprint(signatureError), func(t *testing.T) {
 			u, gate, _, restarts := newTestUpdater(t, signatureError, false)
+			requestTestUpdate(t, gate)
 			if !signatureError {
 				gate.BeginCommand()
 				defer gate.EndCommand()
@@ -212,13 +211,14 @@ func TestDownloadLimitsAndOrigins(t *testing.T) {
 	u.client = &http.Client{Transport: transportFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("too much"))}, nil
 	})}
-	if _, err := u.fetch(context.Background(), releaseAPI, 2); err == nil {
+	if _, err := u.fetch(context.Background(), releaseAssetURL("v0.2.2", "rook-linux-amd64"), 2); err == nil {
 		t.Fatal("accepted oversized download")
 	}
 }
 
 func TestChecksumFailureDoesNotExecuteOrReplaceBinary(t *testing.T) {
-	u, _, verifies, restarts := newTestUpdater(t, false, true)
+	u, gate, verifies, restarts := newTestUpdater(t, false, true)
+	requestTestUpdate(t, gate)
 	original := u.client.Transport
 	u.client.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		if strings.HasSuffix(r.URL.Path, ".sha256") {
@@ -236,10 +236,9 @@ func TestChecksumFailureDoesNotExecuteOrReplaceBinary(t *testing.T) {
 }
 
 func TestRejectUnexpectedAssetURL(t *testing.T) {
-	u, _, verifies, restarts := newTestUpdater(t, false, true)
-	candidate := makeRelease("v0.2.2")
-	candidate.Assets[0].URL = "https://evil.test/rook"
-	if _, err := u.stage(context.Background(), candidate); err == nil {
+	u, gate, verifies, restarts := newTestUpdater(t, false, true)
+	requestTestUpdate(t, gate)
+	if _, err := u.stage(context.Background(), "https://evil.test/rook"); err == nil {
 		t.Fatal("allowed attacker-controlled download URL")
 	}
 	if *verifies != 0 || *restarts != 0 {
@@ -261,6 +260,7 @@ func TestRejectSymlinkUpdaterDirectory(t *testing.T) {
 
 func TestRollbackDoesNotLoopWhenPreviousAgentIsOffline(t *testing.T) {
 	u, gate, _, restarts := newTestUpdater(t, false, false)
+	requestTestUpdate(t, gate)
 	u.health = func(context.Context, string) bool { return false }
 	if err := u.Apply(context.Background()); err == nil {
 		t.Fatal("expected health failure")
@@ -278,7 +278,8 @@ func TestRollbackDoesNotLoopWhenPreviousAgentIsOffline(t *testing.T) {
 }
 
 func TestRollbackRestartFailureCanBeRecovered(t *testing.T) {
-	u, _, _, restarts := newTestUpdater(t, false, false)
+	u, gate, _, restarts := newTestUpdater(t, false, false)
+	requestTestUpdate(t, gate)
 	u.restart = func(context.Context) error {
 		*restarts++
 		if *restarts == 2 {

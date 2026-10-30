@@ -191,11 +191,14 @@ func (c *Coordinator) Enable(directory string, automatic bool) error {
 	return nil
 }
 
-func (c *Coordinator) Request(id, target string) (Operation, error) {
+func (c *Coordinator) Request(id, target, trigger string) (Operation, error) {
 	if c.operations == nil {
 		return Operation{}, errors.New("managed updates are disabled")
 	}
-	return c.operations.Request(id, target, c.version)
+	if trigger == "automatic" && !c.autoUpdate {
+		return Operation{}, errors.New("automatic updates are disabled")
+	}
+	return c.operations.Request(id, target, c.version, trigger)
 }
 
 func (c *Coordinator) Operation() *Operation {

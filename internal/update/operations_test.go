@@ -17,7 +17,7 @@ func TestRequestedUpdateSurvivesRestartAndIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	requested, err := operations.Request(testOperationID, "v0.2.2", "v0.2.1")
+	requested, err := operations.Request(testOperationID, "v0.2.2", "v0.2.1", "manual")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,17 +25,17 @@ func TestRequestedUpdateSurvivesRestartAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	duplicate, err := restored.Request(testOperationID, "v0.2.2", "v0.2.1")
+	duplicate, err := restored.Request(testOperationID, "v0.2.2", "v0.2.1", "manual")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if duplicate != requested {
 		t.Fatalf("duplicate changed request: %+v", duplicate)
 	}
-	if _, err := restored.Request(testOperationID, "v0.2.3", "v0.2.1"); err == nil {
+	if _, err := restored.Request(testOperationID, "v0.2.3", "v0.2.1", "manual"); err == nil {
 		t.Fatal("accepted changed identity")
 	}
-	if _, err := restored.Request("e43f705c-bc67-40de-bfb1-12073cf4203b", "v0.2.3", "v0.2.1"); err == nil {
+	if _, err := restored.Request("e43f705c-bc67-40de-bfb1-12073cf4203b", "v0.2.3", "v0.2.1", "manual"); err == nil {
 		t.Fatal("accepted concurrent update")
 	}
 
@@ -63,7 +63,7 @@ func TestRequestRejectsDowngradeAndUntrustedTarget(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := operations.Request(testOperationID, target, "v0.2.1"); err == nil {
+			if _, err := operations.Request(testOperationID, target, "v0.2.1", "manual"); err == nil {
 				t.Fatal("accepted ineligible target")
 			}
 		})
@@ -84,7 +84,7 @@ func TestManualUpdateDoesNotEnableAutomaticUpdates(t *testing.T) {
 		t.Fatal("updated without a request or opt-in")
 	}
 
-	if _, err := gate.Request(testOperationID, "v0.2.2"); err != nil {
+	if _, err := gate.Request(testOperationID, "v0.2.2", "manual"); err != nil {
 		t.Fatal(err)
 	}
 	if err := updater.Apply(context.Background()); err != nil {
@@ -109,7 +109,7 @@ func TestManualUpdateRejectsTamperedReleaseWithoutRestart(t *testing.T) {
 	if err := gate.Enable(filepath.Dir(updater.binary), false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gate.Request(testOperationID, "v0.2.2"); err != nil {
+	if _, err := gate.Request(testOperationID, "v0.2.2", "manual"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,12 +124,18 @@ func TestManualUpdateRejectsTamperedReleaseWithoutRestart(t *testing.T) {
 	}
 }
 
-func TestExplicitRequestCannotBypassPatchPolicyOrFailedVersionSuppression(t *testing.T) {
-	if _, ok := selectRequestedRelease([]release{makeRelease("v0.3.0")}, "v0.2.1", "v0.3.0", "", "amd64"); ok {
-		t.Fatal("accepted a release-line change")
+func TestExplicitRequestCannotBypassFailedVersionSuppression(t *testing.T) {
+	updater, gate, _, restarts := newTestUpdater(t, false, true)
+	requestTestUpdate(t, gate)
+	if err := os.WriteFile(filepath.Join(updater.directory, "failed-versions"), []byte("v0.2.2\n"), 0600); err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := selectRequestedRelease([]release{makeRelease("v0.2.2")}, "v0.2.1", "v0.2.2", "v0.2.2", "amd64"); ok {
-		t.Fatal("retried failed release")
+
+	if err := updater.Apply(context.Background()); err == nil {
+		t.Fatal("retried a failed release")
+	}
+	if *restarts != 0 {
+		t.Fatal("restarted a failed release")
 	}
 }
 
@@ -138,7 +144,7 @@ func TestManualUpdateWaitsForActiveCommandsBeforeDownloading(t *testing.T) {
 	if err := gate.Enable(filepath.Dir(updater.binary), false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gate.Request(testOperationID, "v0.2.2"); err != nil {
+	if _, err := gate.Request(testOperationID, "v0.2.2", "manual"); err != nil {
 		t.Fatal(err)
 	}
 	transport := updater.client.Transport
@@ -169,7 +175,7 @@ func TestLostCompletionDeliveryDoesNotRepeatBinaryReplacement(t *testing.T) {
 	if err := gate.Enable(filepath.Dir(updater.binary), false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gate.Request(testOperationID, "v0.2.2"); err != nil {
+	if _, err := gate.Request(testOperationID, "v0.2.2", "manual"); err != nil {
 		t.Fatal(err)
 	}
 	updater.restart = func(context.Context) error {
@@ -201,5 +207,100 @@ func TestLostCompletionDeliveryDoesNotRepeatBinaryReplacement(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(updater.directory, "pending.json")); !os.IsNotExist(err) {
 		t.Fatalf("journal retained: %v", err)
+	}
+}
+
+func TestAutomaticUpdatesRequireAnExactPlatformRequest(t *testing.T) {
+	updater, gate, verifies, restarts := newTestUpdater(t, false, true)
+	original := updater.client.Transport
+	downloads := 0
+	updater.client.Transport = transportFunc(func(request *http.Request) (*http.Response, error) {
+		downloads++
+		return original.RoundTrip(request)
+	})
+
+	if err := updater.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if downloads != 0 || *verifies != 0 || *restarts != 0 {
+		t.Fatal("automatic policy performed work without a platform request")
+	}
+
+	if _, err := gate.Request(testOperationID, "v0.2.2", "automatic"); err != nil {
+		t.Fatal(err)
+	}
+	if err := updater.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	operation := gate.Operation()
+	if operation == nil || operation.Trigger != "automatic" || operation.Status != "succeeded" {
+		t.Fatalf("automatic operation was not recorded: %+v", operation)
+	}
+	if downloads != 3 || *verifies != 1 || *restarts != 1 {
+		t.Fatalf("unexpected work: downloads=%d, verifies=%d, restarts=%d", downloads, *verifies, *restarts)
+	}
+}
+
+func TestManualPolicyRejectsAutomaticRequests(t *testing.T) {
+	updater, gate, _, _ := newTestUpdater(t, false, true)
+	if err := gate.Enable(filepath.Dir(updater.binary), false); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := gate.Request(testOperationID, "v0.2.2", "automatic"); err == nil || err.Error() != "automatic updates are disabled" {
+		t.Fatalf("automatic request was not rejected: %v", err)
+	}
+	if gate.Operation() != nil {
+		t.Fatal("rejected automatic request was persisted")
+	}
+	if _, err := gate.Request(testOperationID, "v0.2.2", "manual"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHelperRechecksAutomaticPolicyBeforeDownloading(t *testing.T) {
+	updater, gate, verifies, restarts := newTestUpdater(t, false, true)
+	if _, err := gate.Request(testOperationID, "v0.2.2", "automatic"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Enable(filepath.Dir(updater.binary), false); err != nil {
+		t.Fatal(err)
+	}
+	updater.client.Transport = transportFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("downloaded an automatic update after opt-out")
+		return nil, nil
+	})
+
+	if err := updater.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	operation := gate.Operation()
+	if operation == nil || operation.Status != "failed" || operation.Trigger != "automatic" {
+		t.Fatalf("automatic cancellation was not recorded: %+v", operation)
+	}
+	if *verifies != 0 || *restarts != 0 {
+		t.Fatal("installed an automatic update after opt-out")
+	}
+}
+
+func TestRequestsRequireAnExplicitTrigger(t *testing.T) {
+	for _, trigger := range []string{"", "unknown"} {
+		t.Run(trigger, func(t *testing.T) {
+			operations, err := OpenOperations(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = operations.Request(testOperationID, "v0.2.2", "v0.2.1", trigger)
+
+			if err == nil || err.Error() != "invalid update request" {
+				t.Fatalf("missing or invalid trigger was accepted: %v", err)
+			}
+			if operations.Snapshot() != nil {
+				t.Fatal("invalid request was persisted")
+			}
+		})
 	}
 }

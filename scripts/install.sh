@@ -239,7 +239,7 @@ UNIT
 
   cat > "/etc/systemd/system/rook-update.timer" <<UNIT
 [Unit]
-Description=Check for requested Rook updates and scheduled patch updates
+Description=Check for pending Rook update requests
 
 [Timer]
 OnBootSec=1min

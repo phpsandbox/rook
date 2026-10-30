@@ -304,11 +304,12 @@ func handleAgentUpdate(ctx context.Context, msg agent.InboundMessage, ws *agent.
 	var request struct {
 		ID            string `json:"id"`
 		TargetVersion string `json:"targetVersion"`
+		Trigger       string `json:"trigger"`
 	}
 	err := json.Unmarshal(msg.Payload, &request)
 	var operation update.Operation
 	if err == nil {
-		operation, err = coordinator.Request(request.ID, request.TargetVersion)
+		operation, err = coordinator.Request(request.ID, request.TargetVersion, request.Trigger)
 	}
 	result := agent.OutboundMessage{Type: "result", CommandID: msg.CommandID}
 	if err != nil {

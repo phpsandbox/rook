@@ -16,6 +16,7 @@ var operationID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0
 type Operation struct {
 	ID            string `json:"id"`
 	TargetVersion string `json:"targetVersion"`
+	Trigger       string `json:"trigger,omitempty"`
 	Status        string `json:"status"`
 	UpdatedAt     string `json:"updatedAt"`
 }
@@ -26,7 +27,7 @@ func (o Operation) Pending() bool {
 
 func (o Operation) valid() bool {
 	_, versionOK := parseVersion(o.TargetVersion)
-	return operationID.MatchString(o.ID) && versionOK && (o.Pending() || o.Status == "succeeded" || o.Status == "failed" || o.Status == "rolled_back")
+	return operationID.MatchString(o.ID) && versionOK && (o.Trigger == "manual" || o.Trigger == "automatic") && (o.Pending() || o.Status == "succeeded" || o.Status == "failed" || o.Status == "rolled_back")
 }
 
 // Operations persists the most recent request across daemon restarts. The
@@ -64,15 +65,15 @@ func (o *Operations) Snapshot() *Operation {
 	return &copy
 }
 
-func (o *Operations) Request(id, target, installed string) (Operation, error) {
+func (o *Operations) Request(id, target, installed, trigger string) (Operation, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	request := Operation{ID: id, TargetVersion: target, Status: "waiting"}
+	request := Operation{ID: id, TargetVersion: target, Status: "waiting", Trigger: trigger}
 	if !request.valid() {
 		return Operation{}, errors.New("invalid update request")
 	}
 	if o.current != nil && o.current.ID == id {
-		if o.current.TargetVersion != target {
+		if o.current.TargetVersion != target || o.current.Trigger != request.Trigger {
 			return Operation{}, errors.New("update request identity changed")
 		}
 		return *o.current, nil
@@ -80,9 +81,7 @@ func (o *Operations) Request(id, target, installed string) (Operation, error) {
 	if o.current != nil && o.current.Pending() {
 		return Operation{}, errors.New("another update is pending")
 	}
-	next, _ := parseVersion(target)
-	current, ok := parseVersion(installed)
-	if !ok || next[0] != current[0] || next[1] != current[1] || !newer(next, current) {
+	if !isPatchUpgrade(installed, target) {
 		return Operation{}, errors.New("target must be a newer stable patch in the installed release line")
 	}
 	if err := o.save(request); err != nil {
@@ -94,7 +93,7 @@ func (o *Operations) Request(id, target, installed string) (Operation, error) {
 func (o *Operations) Report(result Operation) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if !result.valid() || o.current == nil || result.ID != o.current.ID || result.TargetVersion != o.current.TargetVersion {
+	if !result.valid() || o.current == nil || result.ID != o.current.ID || result.TargetVersion != o.current.TargetVersion || result.Trigger != o.current.Trigger {
 		return errors.New("update result does not match the pending request")
 	}
 	if !o.current.Pending() {

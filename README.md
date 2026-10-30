@@ -61,8 +61,9 @@ Add `--purge` to also remove the stored token, deployment state, and system user
 ## Managed updates
 
 The standard installer enables owner-requested updates and automatic patch
-updates by default. No update flags are required. Add `--manual-updates` to
-require owner approval while retaining updates through the authenticated control
+updates by default. Automatic requests are planned by the authenticated control
+plane; the local helper only installs an exact requested release. No update flags
+are required. Add `--manual-updates` to require owner approval while retaining updates through the authenticated control
 plane. Requesting an individual update does not change the automatic-update policy.
 
 Rook persists the request before acknowledging it, reports progress through
@@ -91,9 +92,19 @@ Use the systemd installer to provision the privileged helper and private runtime
 socket required by both update modes. Release signature verification is built
 into Rook; no additional tool or GitHub login is required.
 
-The helper checks for automatic updates at most once every 24 hours.
-In manual mode, release requests are made only for an explicit owner update
-request.
+The authenticated control plane selects exact update targets. It checks for
+eligible automatic patches at most once every 24 hours per connected server,
+and persists automatic and owner-requested updates through the same operation
+history. Rook reports its policy and progress through heartbeats. In manual mode,
+the control plane must receive an explicit owner request.
+
+Rook does not browse release catalogs or select a newer version. The local helper
+checks for a persisted request approximately once a minute, downloads only that
+version from the fixed release origin, and independently verifies it. It makes
+no release requests without an accepted operation. New updates wait when the
+control plane is unavailable; local recovery of an interrupted replacement
+continues independently.
+
 Only newer stable patch releases within the installed minor version are eligible:
 for example, `v0.2.1` can update to `v0.2.2`, but not `v0.3.0`. Development
 builds do not update automatically.
