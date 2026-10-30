@@ -1,16 +1,22 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       matrix:
         include:
@@ -40,9 +46,35 @@ jobs:
         run: |
           mkdir -p dist
           asset="rook-${GOOS}-${GOARCH}"
-          go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME}" -o "dist/${asset}" ./cmd/rook
+          # Retain symbol tables so govulncheck can identify code actually
+          # present in the binary instead of falling back to module-level checks.
+          go build -trimpath -ldflags="-w -X main.version=${GITHUB_REF_NAME}" -o "dist/${asset}" ./cmd/rook
           env -u GOOS -u GOARCH go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 -mode=binary "dist/${asset}"
           (cd dist && sha256sum "${asset}" > "${asset}.sha256")
+      - name: Attest release binary
+        id: attest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/rook-${{ matrix.goos }}-${{ matrix.goarch }}
+      - name: Include verification bundle
+        run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/rook-${{ matrix.goos }}-${{ matrix.goarch }}.sigstore.json"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: rook-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: rook-linux-*
+          path: dist
+          merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
           files: dist/*

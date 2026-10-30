@@ -58,7 +58,81 @@ curl -fsSL https://install.phpsandbox.io/rook | sudo bash -s -- --uninstall
 
 Add `--purge` to also remove the stored token, deployment state, and system user.
 
+## Managed updates
+
+The standard installer enables owner-requested updates and automatic patch
+updates by default. Automatic requests are planned by the authenticated control
+plane; the local helper only installs an exact requested release. No update flags
+are required. Add `--manual-updates` to require owner approval while retaining updates through the authenticated control
+plane. Requesting an individual update does not change the automatic-update policy.
+
+Rook persists the request before acknowledging it, reports progress through
+heartbeats, and retains the outcome across restarts. Requests are idempotent;
+a second update cannot replace an active request. Targets must be newer stable
+versions with binaries, checksums, and signed provenance for this architecture.
+Managed updates stay within the installed minor release line. Changes of release
+line require a manual installation upgrade. Arbitrary download URLs, commands,
+and downgrades are rejected.
+
+The installer provides a root-owned systemd helper. It checks for requests
+approximately once a minute; the daemon does not receive permission to run
+arbitrary privileged commands. The helper independently verifies releases and
+uses the same drain, replacement, and rollback path as automatic updates.
+
+Run the installer to upgrade an older installation to this behavior. It preserves
+existing configuration and deployment state. Pass `--manual-updates` when
+installing or reinstalling to keep automatic updates disabled.
+
+## Automatic updates
+
+Automatic patch updates are enabled by default in Rook. The installer starts the
+service without update flags. Pass `--manual-updates` to either the installer or
+the daemon to require owner approval while retaining owner-requested updates.
+Use the systemd installer to provision the privileged helper and private runtime
+socket required by both update modes. Release signature verification is built
+into Rook; no additional tool or GitHub login is required.
+
+The authenticated control plane selects exact update targets. It checks for
+eligible automatic patches at most once every 24 hours per connected server,
+and persists automatic and owner-requested updates through the same operation
+history. Rook reports its policy and progress through heartbeats. In manual mode,
+the control plane must receive an explicit owner request.
+
+Rook does not browse release catalogs or select a newer version. The local helper
+checks for a persisted request approximately once a minute, downloads only that
+version from the fixed release origin, and independently verifies it. It makes
+no release requests without an accepted operation. New updates wait when the
+control plane is unavailable; local recovery of an interrupted replacement
+continues independently.
+
+Only newer stable patch releases within the installed minor version are eligible:
+for example, `v0.2.1` can update to `v0.2.2`, but not `v0.3.0`. Development
+builds do not update automatically.
+
+Before replacement, Rook verifies the checksum and signed build attestation
+against this repository's release workflow and the exact release tag. Sigstore
+trust metadata is refreshed over HTTPS and verified using its built-in TUF trust
+anchor. Updates wait until host commands finish, then allow up to 30 seconds
+for relays to drain.
+The restart briefly disconnects tunnels; deployed applications keep running.
+Configuration and deployment state are preserved.
+
+The previous binary is retained and restored if the new agent fails to reconnect
+both control and data channels. Failed versions are skipped on subsequent
+checks. Inspect update attempts with `journalctl -u rook-update.service` or run
+a check immediately with `sudo systemctl start rook-update.service`.
+
+To stop automatic updates, rerun the installer with `--manual-updates`.
+Alternatively, add `--manual-updates` to `rook.service`'s `ExecStart`, run
+`sudo systemctl daemon-reload`, and restart `rook.service`. A later installer run
+without `--manual-updates` enables automatic patch updates again.
+
 ## Release
 
+The release workflow can also be dispatched against an existing version tag.
+Dispatches against branches do not build or publish release assets.
+
 Tags named `v*` run the test suite, build Linux `amd64` and `arm64` binaries,
-generate mandatory SHA-256 checksums, and attach them to a GitHub release.
+scan source and binaries for known vulnerabilities, generate mandatory SHA-256
+checksums and signed build attestations, and publish both architectures together
+in a GitHub release.

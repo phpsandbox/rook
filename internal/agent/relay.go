@@ -46,6 +46,7 @@ type RelayManager struct {
 	generation           context.Context
 	cancelGeneration     context.CancelFunc
 	resetWrites          chan struct{}
+	draining             bool
 }
 
 type relayStream struct {
@@ -76,6 +77,36 @@ func NewRelayManager(proxy *Proxy, ws MessagePackSender) *RelayManager {
 		generation: generation, cancelGeneration: cancel,
 		resetWrites: make(chan struct{}, maxConcurrentHTTPRequests+maxQueuedHTTPRequests+256),
 	}
+}
+
+// Drain stops admission while existing relays finish. At the deadline, cancel
+// remaining tunnels; deployments themselves are unaffected.
+func (m *RelayManager) Drain(ctx context.Context) error {
+	m.mu.Lock()
+	m.draining = true
+	m.mu.Unlock()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		m.mu.Lock()
+		done := len(m.workers) == 0
+		m.mu.Unlock()
+		if done {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			m.Reset(errors.New("relay closed for agent update"))
+			return nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *RelayManager) Resume() {
+	m.mu.Lock()
+	m.draining = false
+	m.mu.Unlock()
 }
 
 // Handle only admits streams and enqueues frames. Upstream I/O never runs on
@@ -141,6 +172,11 @@ func (m *RelayManager) handleOpen(ctx context.Context, frame RelayFrame) {
 		return
 	}
 	m.mu.Lock()
+	if m.draining {
+		m.mu.Unlock()
+		m.sendReset(ctx, frame.StreamID, frame.Kind, errors.New("agent updating"))
+		return
+	}
 	if m.streams[frame.StreamID] != nil {
 		m.mu.Unlock()
 		// A duplicate cannot replace a stream still producing frames with this ID.

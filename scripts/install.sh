@@ -20,6 +20,7 @@ Options:
   --token TOKEN        Authentication token (required for fresh install)
   --control-plane URL  Control plane websocket URL (required for fresh install)
   --version VERSION    Install a specific version, for example v0.1.0 (default: latest)
+  --manual-updates     Require owner approval for patch updates (automatic updates disabled)
   --uninstall          Remove Rook and its service
   --purge              With --uninstall, also remove configuration, state, and the rook user
   -h, --help           Show this help
@@ -39,6 +40,7 @@ CONTROL_PLANE=""
 VERSION="latest"
 UNINSTALL=false
 PURGE=false
+AUTO_UPDATE=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -46,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="${2:-}"; shift 2 ;;
     --control-plane) CONTROL_PLANE="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
+    --manual-updates) AUTO_UPDATE=false; shift ;;
     --uninstall) UNINSTALL=true; shift ;;
     --purge) PURGE=true; shift ;;
     -h|--help) usage ;;
@@ -162,8 +165,17 @@ download_binary() {
   download "$(asset_url "$VERSION" "$asset")" "$binary_tmp"
   download "$(asset_url "$VERSION" "${asset}.sha256")" "$checksum_tmp"
   verify_checksum "$binary_tmp" "$checksum_tmp"
+  chmod 0700 "$binary_tmp"
+  if ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -manual-updates'; then
+    err "selected Rook version does not support --manual-updates"
+  fi
 
-  install -m 0755 "$binary_tmp" "${INSTALL_DIR}/${BINARY_NAME}"
+  local staged
+  staged="$(mktemp "${INSTALL_DIR}/.rook-install.XXXXXX")"
+  install -m 0755 "$binary_tmp" "$staged"
+  mv -f "$staged" "${INSTALL_DIR}/${BINARY_NAME}"
+  # A manual install supersedes any interrupted automatic update.
+  rm -f "${INSTALL_DIR}/.rook-update/pending.json" "${INSTALL_DIR}/.rook-update/failed-versions"
   rm -rf "$tmpdir"
   log "Installed ${INSTALL_DIR}/${BINARY_NAME}"
 }
@@ -182,6 +194,10 @@ YAML
 }
 
 write_systemd_unit() {
+  local update_arg=""
+  if [[ "$AUTO_UPDATE" == "false" ]]; then
+    update_arg=" --manual-updates"
+  fi
   cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 [Unit]
 Description=PHPSandbox Rook
@@ -194,13 +210,45 @@ Type=simple
 User=rook
 Group=rook
 WorkingDirectory=${STATE_DIR}
+RuntimeDirectory=rook
+RuntimeDirectoryMode=0700
 Environment=HOME=${STATE_DIR}
-ExecStart=${INSTALL_DIR}/${BINARY_NAME} --config ${CONFIG_FILE}
+ExecStart=${INSTALL_DIR}/${BINARY_NAME} --config ${CONFIG_FILE}${update_arg}
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
+UNIT
+
+  cat > "/etc/systemd/system/rook-update.service" <<UNIT
+[Unit]
+Description=Verify and apply Rook patch updates
+After=network-online.target rook.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=${INSTALL_DIR}/${BINARY_NAME} --apply-update
+TimeoutStartSec=10min
+TimeoutStopSec=4min
+UMask=0077
+UNIT
+
+  cat > "/etc/systemd/system/rook-update.timer" <<UNIT
+[Unit]
+Description=Check for pending Rook update requests
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+RandomizedDelaySec=15s
+Unit=rook-update.service
+
+[Install]
+WantedBy=timers.target
 UNIT
 
   systemctl daemon-reload
@@ -210,14 +258,21 @@ UNIT
 start_service() {
   systemctl enable "$SERVICE_NAME"
   systemctl restart "$SERVICE_NAME"
+  # The daemon exposes owner requests and its automatic-update policy through
+  # a private socket. The helper checks that policy before requesting releases.
+  systemctl enable --now rook-update.timer
   log "Started ${SERVICE_NAME}.service"
 }
 
 uninstall() {
+  systemctl stop rook-update.timer rook-update.service 2>/dev/null || true
+  systemctl disable rook-update.timer 2>/dev/null || true
   systemctl stop "$SERVICE_NAME" 2>/dev/null || true
   systemctl disable "$SERVICE_NAME" 2>/dev/null || true
   rm -f "${INSTALL_DIR}/${BINARY_NAME}"
   rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
+  rm -f /etc/systemd/system/rook-update.service /etc/systemd/system/rook-update.timer
+  rm -rf "${INSTALL_DIR}/.rook-update"
   systemctl daemon-reload
   if [[ "$PURGE" == "true" ]]; then
     rm -rf "$CONFIG_DIR" "$STATE_DIR"
@@ -242,6 +297,12 @@ main() {
     return
   fi
 
+  if [[ "$AUTO_UPDATE" == "true" ]]; then
+    log "Owner-requested and automatic patch updates are enabled. Use --manual-updates to require approval."
+  else
+    log "Owner-requested updates are enabled. Automatic patch updates are disabled."
+  fi
+
   check_docker
   create_user
 
@@ -254,6 +315,17 @@ main() {
   fi
 
   install -d -m 0755 "$INSTALL_DIR"
+  # Stop the managed updater before replacing its executable. Preserve the
+  # existing timer if installation fails, without requiring another host tool.
+  if systemctl is-active --quiet rook-update.timer; then
+    trap 'systemctl start rook-update.timer >/dev/null 2>&1 || true' EXIT
+  fi
+  if ! systemctl stop rook-update.timer rook-update.service 2>/dev/null; then
+    if systemctl is-active --quiet rook-update.service || systemctl is-active --quiet rook-update.timer; then
+      err "could not stop automatic updates before installation"
+    fi
+  fi
+  install -d -m 0700 -o root -g root "${INSTALL_DIR}/.rook-update"
   install -d -m 0750 -o rook -g rook "$STATE_DIR" "${STATE_DIR}/state"
   download_binary
 
