@@ -60,9 +60,10 @@ Add `--purge` to also remove the stored token, deployment state, and system user
 
 ## Managed updates
 
-Add `--managed-updates` to the installer command to allow the server owner to
-request an exact stable release through the authenticated control plane. This
-permission is separate from automatic updates and does not enable them.
+The standard installer enables owner-requested updates and automatic patch
+updates by default. No update flags are required. Add `--manual-updates` to
+require owner approval while retaining updates through the authenticated control
+plane. Requesting an individual update does not change the automatic-update policy.
 
 Rook persists the request before acknowledging it, reports progress through
 heartbeats, and retains the outcome across restarts. Requests are idempotent;
@@ -77,18 +78,22 @@ approximately once a minute; the daemon does not receive permission to run
 arbitrary privileged commands. The helper independently verifies releases and
 uses the same drain, replacement, and rollback path as automatic updates.
 
-Older installations require a one-time installer upgrade to enable managed
-updates. Run without either update flag to disable remote and automatic updates.
+Run the installer to upgrade an older installation to this behavior. It preserves
+existing configuration and deployment state. Pass `--manual-updates` when
+installing or reinstalling to keep automatic updates disabled.
 
 ## Automatic updates
 
-Automatic updates are disabled by default. Add `--auto-update` to the install
-command to start the daemon with that flag. Release signature verification is
-built into Rook; no additional tool or GitHub login is required.
+Automatic patch updates are enabled by default for systemd installations.
+The installer starts the daemon with `--managed-updates --auto-update`;
+`--manual-updates` omits the automatic-update flag. Standalone daemon invocations
+do not enable either mode implicitly and require the systemd helper to install
+updates. Release signature verification is built into Rook; no additional tool or
+GitHub login is required.
 
 The helper checks for automatic updates at most once every 24 hours.
-Without `--auto-update`, release requests are made only for an explicit managed
-update request.
+In manual mode, release requests are made only for an explicit owner update
+request.
 Only newer stable patch releases within the installed minor version are eligible:
 for example, `v0.2.1` can update to `v0.2.2`, but not `v0.3.0`. Development
 builds do not update automatically.
@@ -106,9 +111,11 @@ both control and data channels. Failed versions are skipped on subsequent
 checks. Inspect update attempts with `journalctl -u rook-update.service` or run
 a check immediately with `sudo systemctl start rook-update.service`.
 
-To stop automatic updates, remove `--auto-update` from `rook.service`'s
-`ExecStart`, run `sudo systemctl daemon-reload`, and restart `rook.service`.
-Rerunning the installer without the flag also disables them.
+To stop automatic updates, rerun the installer with `--manual-updates`.
+Alternatively, remove `--auto-update` from `rook.service`'s `ExecStart`, run
+`sudo systemctl daemon-reload`, and restart `rook.service`. Keep
+`--managed-updates` to allow owner-requested updates. A later installer run
+without `--manual-updates` enables automatic patch updates again.
 
 ## Release
 

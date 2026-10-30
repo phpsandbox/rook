@@ -20,8 +20,8 @@ Options:
   --token TOKEN        Authentication token (required for fresh install)
   --control-plane URL  Control plane websocket URL (required for fresh install)
   --version VERSION    Install a specific version, for example v0.1.0 (default: latest)
-  --managed-updates    Allow owner-requested updates (automatic updates stay disabled)
-  --auto-update        Opt into automatic updates within the installed minor version
+  --manual-updates     Require owner approval for patch updates (automatic updates disabled)
+  --auto-update        Enable automatic patch updates (default)
   --uninstall          Remove Rook and its service
   --purge              With --uninstall, also remove configuration, state, and the rook user
   -h, --help           Show this help
@@ -41,9 +41,7 @@ CONTROL_PLANE=""
 VERSION="latest"
 UNINSTALL=false
 PURGE=false
-MANAGED_UPDATES=false
-AUTO_UPDATE=false
-AUTO_UPDATE_SUPPORTED=false
+AUTO_UPDATE=true
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,7 +49,7 @@ while [[ $# -gt 0 ]]; do
     --token) TOKEN="${2:-}"; shift 2 ;;
     --control-plane) CONTROL_PLANE="${2:-}"; shift 2 ;;
     --version) VERSION="${2:-}"; shift 2 ;;
-    --managed-updates) MANAGED_UPDATES=true; shift ;;
+    --manual-updates) AUTO_UPDATE=false; shift ;;
     --auto-update) AUTO_UPDATE=true; shift ;;
     --uninstall) UNINSTALL=true; shift ;;
     --purge) PURGE=true; shift ;;
@@ -170,13 +168,11 @@ download_binary() {
   download "$(asset_url "$VERSION" "${asset}.sha256")" "$checksum_tmp"
   verify_checksum "$binary_tmp" "$checksum_tmp"
   chmod 0700 "$binary_tmp"
-  if "$binary_tmp" --help 2>&1 | grep -q -- '^  -auto-update'; then
-    AUTO_UPDATE_SUPPORTED=true
-  elif [[ "$AUTO_UPDATE" == "true" ]]; then
+  if ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -auto-update'; then
     err "selected Rook version does not support --auto-update"
   fi
 
-  if [[ "$MANAGED_UPDATES" == "true" ]] && ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -managed-updates'; then
+  if ! "$binary_tmp" --help 2>&1 | grep -q -- '^  -managed-updates'; then
     err "selected Rook version does not support --managed-updates"
   fi
 
@@ -204,10 +200,7 @@ YAML
 }
 
 write_systemd_unit() {
-  local auto_update_arg=""
-  if [[ "$MANAGED_UPDATES" == "true" ]]; then
-    auto_update_arg=" --managed-updates"
-  fi
+  local auto_update_arg=" --managed-updates"
   if [[ "$AUTO_UPDATE" == "true" ]]; then
     auto_update_arg="${auto_update_arg} --auto-update"
   fi
@@ -234,10 +227,9 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-  if [[ "$AUTO_UPDATE_SUPPORTED" == "true" ]]; then
-    cat > "/etc/systemd/system/rook-update.service" <<UNIT
+  cat > "/etc/systemd/system/rook-update.service" <<UNIT
 [Unit]
-Description=Verify and apply opted-in Rook patch updates
+Description=Verify and apply Rook patch updates
 After=network-online.target rook.service
 Wants=network-online.target
 
@@ -251,9 +243,9 @@ TimeoutStopSec=4min
 UMask=0077
 UNIT
 
-    cat > "/etc/systemd/system/rook-update.timer" <<UNIT
+  cat > "/etc/systemd/system/rook-update.timer" <<UNIT
 [Unit]
-Description=Check opted-in Rook agents for patch updates daily
+Description=Check for requested Rook updates and scheduled patch updates
 
 [Timer]
 OnBootSec=1min
@@ -264,11 +256,6 @@ Unit=rook-update.service
 [Install]
 WantedBy=timers.target
 UNIT
-  else
-    systemctl stop rook-update.timer rook-update.service 2>/dev/null || true
-    systemctl disable rook-update.timer 2>/dev/null || true
-    rm -f /etc/systemd/system/rook-update.service /etc/systemd/system/rook-update.timer
-  fi
 
   systemctl daemon-reload
   log "Wrote systemd unit"
@@ -277,11 +264,9 @@ UNIT
 start_service() {
   systemctl enable "$SERVICE_NAME"
   systemctl restart "$SERVICE_NAME"
-  # The helper makes no network requests unless the daemon exposes its opt-in
-  # socket. Keeping the timer installed lets ExecStart control the feature.
-  if [[ "$AUTO_UPDATE_SUPPORTED" == "true" ]]; then
-    systemctl enable --now rook-update.timer
-  fi
+  # The daemon exposes owner requests and its automatic-update policy through
+  # a private socket. The helper checks that policy before requesting releases.
+  systemctl enable --now rook-update.timer
   log "Started ${SERVICE_NAME}.service"
 }
 
@@ -316,6 +301,12 @@ main() {
   if [[ "$UNINSTALL" == "true" ]]; then
     uninstall
     return
+  fi
+
+  if [[ "$AUTO_UPDATE" == "true" ]]; then
+    log "Owner-requested and automatic patch updates are enabled. Use --manual-updates to require approval."
+  else
+    log "Owner-requested updates are enabled. Automatic patch updates are disabled."
   fi
 
   check_docker
