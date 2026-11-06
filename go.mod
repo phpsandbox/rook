@@ -6,7 +6,7 @@ require (
 	github.com/sigstore/sigstore-go v1.3.0
 	github.com/theupdateframework/go-tuf/v2 v2.4.2
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v3 v3.0.6
 	nhooyr.io/websocket v1.8.17
 )
 
