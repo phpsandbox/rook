@@ -58,7 +58,7 @@ jobs:
           subject-path: dist/rook-${{ matrix.goos }}-${{ matrix.goarch }}
       - name: Include verification bundle
         run: cp "${{ steps.attest.outputs.bundle-path }}" "dist/rook-${{ matrix.goos }}-${{ matrix.goarch }}.sigstore.json"
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           name: rook-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
